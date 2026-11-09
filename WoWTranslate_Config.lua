@@ -105,7 +105,7 @@ end)
 -- Title
 local title = configFrame:CreateFontString(nil, "ARTWORK", "GameFontNormalLarge")
 title:SetPoint("TOP", configFrame, "TOP", 0, -20)
-title:SetText("WoWTranslate Configuration - v1.5")
+title:SetText("WoWTranslate Configuration - v" .. ((GetAddOnMetadata and GetAddOnMetadata("WoWTranslate", "Version")) or "?"))
 
 -- Close button
 local closeBtn = CreateFrame("Button", nil, configFrame, "UIPanelCloseButton")
@@ -505,6 +505,7 @@ clearBtn:SetText("Clear Cache")
 clearBtn:SetScript("OnClick", function()
     if WoWTranslate_CacheClear then
         WoWTranslate_CacheClear()
+        if WoWTranslate_ItemNamesClear then WoWTranslate_ItemNamesClear() end
         DEFAULT_CHAT_FRAME:AddMessage("|cFFFFFF00[WoWTranslate] Cache cleared|r")
     end
 end)

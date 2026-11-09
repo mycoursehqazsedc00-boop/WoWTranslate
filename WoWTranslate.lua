@@ -63,7 +63,6 @@ local EVENT_TO_CHANNEL = {
     CHAT_MSG_SAY = "SAY",
     CHAT_MSG_YELL = "YELL",
     CHAT_MSG_WHISPER = "WHISPER",
-    CHAT_MSG_WHISPER_INFORM = "WHISPER",  -- echo of a whisper you send, so it gets a [WT-Whisper] translation
     CHAT_MSG_PARTY = "PARTY",
     CHAT_MSG_GUILD = "GUILD",
     CHAT_MSG_OFFICER = "GUILD",
@@ -101,7 +100,7 @@ local defaults = {
     enabled = true,
     debugMode = false,
     -- Outgoing translation settings
-    outgoingEnabled = true,   -- GUILD BUILD: On by default (Shift-click the OUT button to turn off)
+    outgoingEnabled = false,  -- Off by default
     outgoingChannels = {
         WHISPER = true,
         PARTY = true,
@@ -123,11 +122,11 @@ local defaults = {
         RAID = true,
         BATTLEGROUND = true,
         CHANNEL = true,
-        HARDCORE = true,
+        HARDCORE = false,
         ENGLISH = false,
     },
     outgoingPrefix = "[Translated by WoWTranslate]",
-    outgoingPrefixEnabled = false,
+    outgoingPrefixEnabled = true,
     disableWhileAfk = false,
     translateSystemMessages = false,  -- Don't translate system msgs, emotes, NPC speech
     -- Language settings (any-to-any translation)
@@ -144,8 +143,6 @@ local defaults = {
     translateGuildNames = false,
     translateNameplates = false,
     outgoingButtonPos = { x = 100, y = 100 },
-    outgoingButtonMoved = false,   -- GUILD BUILD: false = use the default top-centre anchor
-    outgoingButtonLocked = true,   -- GUILD BUILD: locked by default; Ctrl-click to unlock and drag
     showOutgoingButton = true,
     playerNameClassColor = true,
     nameplateGuildOOC = false,
@@ -204,6 +201,9 @@ local function DebugLog(a1, a2, a3, a4, a5)
         table.remove(WoWTranslateDebugLog, 1)
     end
 end
+
+-- Let the other modules (cache, item names) write to the same debug log.
+WoWTranslate_Trace = DebugLog
 
 -- ============================================================================
 -- SOURCE LANGUAGE CHARACTER DETECTION
@@ -386,7 +386,22 @@ local function DetectSourceLanguage(text)
     for i = 1, string.len(text) do
         local b = string.byte(text, i)
         if b >= 234 and b <= 237 then hasKorean = true
-        elseif b == 227            then hasHiragana = true
+        elseif b == 227            then
+            -- E3 xx: only second byte 0x81-0x83 is real kana (hiragana/katakana).
+            -- E3 80 is CJK punctuation (e.g. the full-width period) and must not count as Japanese text,
+            -- otherwise a message made only of such punctuation is sent to Google for nothing.
+            -- E3 90-BF is CJK Extension A (rare Chinese ideographs).
+            local nb = string.byte(text, i + 1)
+            if nb then
+                if nb >= 129 and nb <= 131 then hasHiragana = true
+                elseif nb >= 144 and nb <= 191 then hasCJK = true
+                elseif nb == 133 then hasKorean = true            -- Hangul compatibility jamo (ㅋㅋㅋ, ㅠㅠ)
+                elseif nb == 132 then
+                    -- E3 84 80-AF is Bopomofo (Chinese phonetics), E3 84 B0-BF is Hangul jamo
+                    local third = string.byte(text, i + 2)
+                    if third and third >= 176 then hasKorean = true end
+                end
+            end
         elseif b >= 228 and b <= 233 then hasCJK = true
         elseif b == 208 or b == 209  then hasRussian = true
         elseif (b >= 65 and b <= 90) or (b >= 97 and b <= 122) then
@@ -469,7 +484,7 @@ local function CheckItemCache(itemIds, triggerCache)
     local uncachedIds = {}
 
     for _, itemId in ipairs(itemIds) do
-        local name, link = GetItemInfo(itemId)
+        local name = WoWTranslate_GetItemName(itemId)
         if not name then
             table.insert(uncachedIds, itemId)
             -- Use SetHyperlink to force server to send item data
@@ -595,7 +610,7 @@ local function LocalizeHyperlink(link)
         DebugLog("  Item ID:", itemId)
         if itemId then
             -- GetItemInfo returns: name, link, quality, iLevel, ...
-            local itemName, itemLink = GetItemInfo(itemId)
+            local itemName = WoWTranslate_GetItemName(itemId)
             DebugLog("  GetItemInfo returned:", itemName or "nil")
 
             if itemName then
@@ -760,11 +775,42 @@ local function SplitIntoSegments(text)
     return segments
 end
 
+-- True when a short text is nothing but known kaomoji (plus spaces/ASCII symbols).
+-- Such text is detected as ja/ru/zh because of the symbols inside the kaomoji, but there
+-- is nothing to translate. Codes come from WoWTranslate_Emotes.lua (TwitchEmotes+ kaomoji).
+local emoteMemo = {}
+local emoteMemoCount = 0
+local function IsEmoteOnly(text)
+    local list = WoWTranslate_EmoteCodes
+    if not list or not text or string.len(text) > 160 then return false end
+    -- The same line passes through every chat frame; remember the answer.
+    local memo = emoteMemo[text]
+    if memo ~= nil then return memo end
+    local rest = text
+    for i = 1, table.getn(list) do
+        local code = list[i]
+        local s, e = string.find(rest, code, 1, true)
+        while s do
+            rest = string.sub(rest, 1, s - 1) .. " " .. string.sub(rest, e + 1)
+            s, e = string.find(rest, code, 1, true)
+        end
+    end
+    local result = (rest ~= text and DetectSourceLanguage(rest) == nil)
+    if emoteMemoCount >= 200 then emoteMemo = {}; emoteMemoCount = 0 end
+    emoteMemo[text] = result
+    emoteMemoCount = emoteMemoCount + 1
+    if result then DebugLog("Skipped emote-only text:", string.sub(text, 1, 40)) end
+    return result
+end
+
 -- Check if any text segments contain source language characters
 local function HasTranslatableContent(segments)
     for _, seg in ipairs(segments) do
-        if seg.type == "text" and DetectSourceLanguage(seg.content) then
-            return true
+        if seg.type == "text" then
+            local lang = DetectSourceLanguage(seg.content)
+            if lang and not (lang ~= "en" and IsEmoteOnly(seg.content)) then
+                return true
+            end
         end
     end
     return false
@@ -2508,8 +2554,6 @@ local function CreateOutgoingButton()
     f:SetWidth(48)
     f:SetHeight(15)
     f:SetFrameStrata("HIGH")
-    -- GUILD BUILD: the button is movable.  It starts LOCKED so it can't be dragged by
-    -- accident in combat; Ctrl+LeftClick toggles locked/unlocked.
     f:SetMovable(true)
     f:EnableMouse(true)
     f:RegisterForDrag("LeftButton")
@@ -2521,60 +2565,29 @@ local function CreateOutgoingButton()
     })
     f:SetBackdropColor(0, 0, 0, 0.7)
 
-    -- Restore the saved position if the user has ever moved the button; otherwise use
-    -- the default out-of-the-way anchor near the top-centre of the screen.
-    f:ClearAllPoints()
-    local pos = WoWTranslateDB and WoWTranslateDB.outgoingButtonPos
-    if WoWTranslateDB and WoWTranslateDB.outgoingButtonMoved and pos and pos.x and pos.y then
-        f:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", pos.x, pos.y)
-    else
-        f:SetPoint("TOP", UIParent, "TOP", 200, -10)
-    end
+    local pos = WoWTranslateDB and WoWTranslateDB.outgoingButtonPos or { x=100, y=100 }
+    f:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", pos.x, pos.y)
 
     local label = f:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
     label:SetAllPoints(f)
     f.label = label
 
+    f:SetScript("OnMouseDown", function()
+        -- Toggle on click release (OnMouseUp handles it); just visual feedback.
+    end)
     f:SetScript("OnMouseUp", function()
-        -- Modifier-gated so an accidental click during combat can't change anything:
-        --   Ctrl+LeftClick  = lock / unlock the button so it can be dragged
-        --   Shift+LeftClick = turn outgoing translation ON / OFF
         if arg1 == "LeftButton" then
-            if IsControlKeyDown() then
-                local nowLocked = not (WoWTranslateDB and WoWTranslateDB.outgoingButtonLocked)
-                if WoWTranslateDB then WoWTranslateDB.outgoingButtonLocked = nowLocked end
-                if nowLocked then
-                    DEFAULT_CHAT_FRAME:AddMessage("|cFF00CCFF[WoWTranslate]|r Button |cFFFF0000LOCKED|r - it can no longer be dragged.")
-                else
-                    DEFAULT_CHAT_FRAME:AddMessage("|cFF00CCFF[WoWTranslate]|r Button |cFF00FF00UNLOCKED|r - drag it anywhere, then Ctrl-click again to lock.")
-                end
-                UpdateOutgoingButton()
-            elseif IsShiftKeyDown() then
-                local nowEnabled = not (WoWTranslateDB and WoWTranslateDB.outgoingEnabled)
-                WoWTranslate_SetOutgoingEnabled(nowEnabled)
-                local status = nowEnabled and "|cFF00FF00ON|r" or "|cFFFF0000OFF|r"
-                DEFAULT_CHAT_FRAME:AddMessage("[WoWTranslate] Outgoing translation: " .. status)
-            else
-                DEFAULT_CHAT_FRAME:AddMessage("|cFFFFFF00[WoWTranslate]|r |cFF00FF00Shift-click|r = translation ON/OFF   |cFF00FF00Ctrl-click|r = unlock/lock so you can move it.")
-            end
+            local nowEnabled = not (WoWTranslateDB and WoWTranslateDB.outgoingEnabled)
+            WoWTranslate_SetOutgoingEnabled(nowEnabled)
         end
     end)
-
-    -- Dragging: only allowed while the button is unlocked (Ctrl-click toggles that).
-    f:SetScript("OnDragStart", function()
-        if WoWTranslateDB and WoWTranslateDB.outgoingButtonLocked then return end
-        this:StartMoving()
-    end)
+    f:SetScript("OnDragStart", function() f:StartMoving() end)
     f:SetScript("OnDragStop", function()
-        this:StopMovingOrSizing()
-        -- Persist the new position so it survives logout.  Anchored BOTTOMLEFT to
-        -- UIParent because GetLeft/GetBottom are reported in that same space.
-        local x, y = this:GetLeft(), this:GetBottom()
-        if x and y and WoWTranslateDB then
-            WoWTranslateDB.outgoingButtonPos   = { x = x, y = y }
-            WoWTranslateDB.outgoingButtonMoved = true
-            this:ClearAllPoints()
-            this:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", x, y)
+        f:StopMovingOrSizing()
+        local x = f:GetLeft()
+        local y = f:GetBottom()
+        if WoWTranslateDB then
+            WoWTranslateDB.outgoingButtonPos = { x = x, y = y }
         end
     end)
 
@@ -3138,6 +3151,11 @@ local function HookedSendChatMessage(msg, chatType, language, channel)
         timestamp = GetTime()
     }
 
+    -- Show local feedback
+    if originalAddMessage then
+        originalAddMessage(DEFAULT_CHAT_FRAME, "|cFFFFFF00[WoWTranslate] Translating...|r")
+    end
+
     DebugLog("Outgoing queued:", queueId, msg)
 
     -- Request translation (send only the text portions, not hyperlinks)
@@ -3173,11 +3191,32 @@ local function HookedSendChatMessage(msg, chatType, language, channel)
             end
 
             -- Truncate if over 255 bytes (WoW chat limit)
+            local wasTruncated = false
             if string.len(finalMsg) > 255 then
                 finalMsg = string.sub(finalMsg, 1, 252) .. "..."
+                wasTruncated = true
+            end
+
+            -- Reverse pair: when the server echoes this line back, the incoming path finds
+            -- it in the cache and shows exactly what the user typed, with no Google call.
+            -- Key = the line as the incoming path sees it (WoWTranslate prefix is stripped
+            -- there); value = original text in placeholder form, like any cached translation.
+            if not wasTruncated then
+                local original = BuildTranslatableText(queued.segments)
+                if original and original ~= "" then
+                    DebugLog("Reverse pair stored for own message:", string.sub(original, 1, 40))
+                    WoWTranslate_CacheSave(reconstructed, original, true)
+                    if finalMsg ~= reconstructed then
+                        WoWTranslate_CacheSave(finalMsg, original, true)
+                    end
+                end
             end
 
             originalSendChatMessage(finalMsg, queued.chatType, queued.language, queued.channel)
+
+            if originalAddMessage then
+                originalAddMessage(DEFAULT_CHAT_FRAME, "|cFF00FF00[WoWTranslate] Sent:|r " .. finalMsg)
+            end
         else
             -- Translation failed - send original
             DebugLog("Outgoing translation failed:", err)
@@ -3352,8 +3391,54 @@ SlashCmdList["WOWTRANSLATE"] = function(msg)
             end
         end)
 
+    elseif cmd == "dict" then
+        local sub, rest = strsplit(" ", arg or "", 2)
+        sub = string.lower(sub or "")
+        if sub == "add" and rest then
+            local _, _, src, tr = string.find(rest, "^(.-)%s+=%s+(.+)$")
+            if src and tr and WoWTranslate_DictSet(src, tr) then
+                DEFAULT_CHAT_FRAME:AddMessage("|cFF00FF00[WoWTranslate] Dictionary: " .. src .. " = " .. tr .. "|r")
+            else
+                DEFAULT_CHAT_FRAME:AddMessage("[WoWTranslate] Usage: /wt dict add <text> = <translation>")
+            end
+        elseif (sub == "del" or sub == "remove") and rest then
+            if WoWTranslate_DictDel(rest) then
+                DEFAULT_CHAT_FRAME:AddMessage("|cFFFFFF00[WoWTranslate] Dictionary entry removed|r")
+            else
+                DEFAULT_CHAT_FRAME:AddMessage("[WoWTranslate] No such dictionary entry")
+            end
+        else
+            local st = WoWTranslate_CacheStats()
+            DEFAULT_CHAT_FRAME:AddMessage("[WoWTranslate] Dictionary: " .. st.dictEntries .. " entries, shared: " .. st.sharedEntries .. ", cache: " .. st.entries .. " (pruned at login: " .. st.pruned .. ")")
+            DEFAULT_CHAT_FRAME:AddMessage("  /wt dict add <text> = <translation>  |  /wt dict del <text>")
+        end
+
+    elseif cmd == "recent" then
+        local list = WoWTranslate_RecentList()
+        if table.getn(list) == 0 then
+            DEFAULT_CHAT_FRAME:AddMessage("[WoWTranslate] No translated lines yet")
+        else
+            for i = 1, table.getn(list) do
+                DEFAULT_CHAT_FRAME:AddMessage("  " .. i .. ". " .. string.sub(list[i][2], 1, 80))
+            end
+            DEFAULT_CHAT_FRAME:AddMessage("[WoWTranslate] Fix one with /wt fix <number> <your translation>")
+        end
+
+    elseif cmd == "fix" then
+        local n, text = nil, nil
+        if arg then
+            local _, _, num, rest = string.find(arg, "^(%d+)%s+(.+)$")
+            if num then n, text = tonumber(num), rest else n, text = 1, arg end
+        end
+        if text and WoWTranslate_FixRecent(n, text) then
+            DEFAULT_CHAT_FRAME:AddMessage("|cFF00FF00[WoWTranslate] Saved to your dictionary. It applies the next time this text appears.|r")
+        else
+            DEFAULT_CHAT_FRAME:AddMessage("[WoWTranslate] Usage: /wt recent, then /wt fix <number> <your translation>")
+        end
+
     elseif cmd == "clearcache" then
         WoWTranslate_CacheClear()
+        if WoWTranslate_ItemNamesClear then WoWTranslate_ItemNamesClear() end
         DEFAULT_CHAT_FRAME:AddMessage("|cFFFFFF00[WoWTranslate] Cache cleared|r")
 
     elseif cmd == "debug" then
@@ -3561,7 +3646,9 @@ SlashCmdList["WOWTRANSLATE"] = function(msg)
         DEFAULT_CHAT_FRAME:AddMessage("  /wt on|off - Enable/disable incoming translation")
         DEFAULT_CHAT_FRAME:AddMessage("  /wt status - Show status")
         DEFAULT_CHAT_FRAME:AddMessage("  /wt reset - Recover if translations stop after alt-tab")
-        DEFAULT_CHAT_FRAME:AddMessage("  /wt clearcache - Clear cache")
+        DEFAULT_CHAT_FRAME:AddMessage("  /wt clearcache - Clear cache (user dictionary is kept)")
+        DEFAULT_CHAT_FRAME:AddMessage("  /wt dict - Show/edit the user dictionary (add/del)")
+        DEFAULT_CHAT_FRAME:AddMessage("  /wt recent - List recent translated lines; /wt fix <n> <text> corrects one")
         DEFAULT_CHAT_FRAME:AddMessage("  /wt debug - Toggle debug mode")
         DEFAULT_CHAT_FRAME:AddMessage("  -- Outgoing --")
         DEFAULT_CHAT_FRAME:AddMessage("  /wt outgoing - toggle outgoing translation (on/off to set explicitly)")
@@ -3589,15 +3676,6 @@ local function InitializeSettings()
         WoWTranslateDB.outgoingPrefix = "[Translated by WoWTranslate]"
     end
 
-    -- One-shot: make "no outgoing prefix" the default for existing users, too.
-    -- Outgoing translated messages now send as plain text (no [Translated by
-    -- WoWTranslate] label). Flips a previously-saved ON to OFF exactly once;
-    -- the user can re-enable it via the config checkbox if desired.
-    if not WoWTranslateDB.wtOutgoingPrefixDefaulted then
-        WoWTranslateDB.outgoingPrefixEnabled = false
-        WoWTranslateDB.wtOutgoingPrefixDefaulted = true
-    end
-
     -- Migration: add BATTLEGROUND/CHANNEL/HARDCORE to existing outgoingChannels
     if WoWTranslateDB.outgoingChannels then
         if WoWTranslateDB.outgoingChannels.BATTLEGROUND == nil then
@@ -3621,12 +3699,8 @@ local function InitializeSettings()
             WoWTranslateDB.incomingChannels[k] = v
         end
     end
-    -- One-shot: enable Hardcore-channel incoming translation for existing users.
-    -- Default is now ON; this flips a previously-saved OFF/nil to ON exactly once,
-    -- after which the user's manual toggle in the config UI is respected.
-    if not WoWTranslateDB.wtHardcoreIncomingDefaulted then
-        WoWTranslateDB.incomingChannels.HARDCORE = true
-        WoWTranslateDB.wtHardcoreIncomingDefaulted = true
+    if WoWTranslateDB.incomingChannels.HARDCORE == nil then
+        WoWTranslateDB.incomingChannels.HARDCORE = false
     end
     if WoWTranslateDB.incomingChannels.ENGLISH == nil then
         WoWTranslateDB.incomingChannels.ENGLISH = false
@@ -3669,13 +3743,6 @@ local function InitializeSettings()
     if WoWTranslateDB.showOutgoingButton == nil then
         WoWTranslateDB.showOutgoingButton = true
     end
-    -- GUILD BUILD: movable OUT button state
-    if WoWTranslateDB.outgoingButtonMoved == nil then
-        WoWTranslateDB.outgoingButtonMoved = false
-    end
-    if WoWTranslateDB.outgoingButtonLocked == nil then
-        WoWTranslateDB.outgoingButtonLocked = true
-    end
 end
 
 local function OnAddonLoaded()
@@ -3697,7 +3764,7 @@ local function OnAddonLoaded()
     local cacheCount = WoWTranslate_CacheStats().entries
     local dllStatus = dllOk and "|cFF00FF00DLL OK|r" or "|cFFFFFF00DLL not loaded|r"
 
-    DEFAULT_CHAT_FRAME:AddMessage("|cFF00CCFFWoWTranslate|r v1.5 - " .. dllStatus .. " | /wt show")
+    DEFAULT_CHAT_FRAME:AddMessage("|cFF00CCFFWoWTranslate|r v" .. ((GetAddOnMetadata and GetAddOnMetadata("WoWTranslate", "Version")) or "?") .. " - " .. dllStatus .. " | /wt show")
 end
 
 -- ============================================================================

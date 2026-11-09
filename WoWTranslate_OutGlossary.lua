@@ -834,12 +834,35 @@ function WoWTranslate_CheckOutGlossaryExact(text)
     return nil
 end
 
-function WoWTranslate_CheckOutGlossaryPartial(text)
-    local sortedKeys = {}
-    for k, _ in pairs(WoWTranslateOutGlossary) do
-        table.insert(sortedKeys, k)
+-- Keys sorted longest first; built once and rebuilt only if the number of keys changes.
+local outSortedKeysCache = nil
+local outSortedKeysCount = 0
+
+local function GetOutSortedKeys()
+    local count = 0
+    for _ in pairs(WoWTranslateOutGlossary) do count = count + 1 end
+    if outSortedKeysCache and count == outSortedKeysCount then
+        return outSortedKeysCache
     end
-    table.sort(sortedKeys, function(a, b) return string.len(a) > string.len(b) end)
+    local keys = {}
+    for k, _ in pairs(WoWTranslateOutGlossary) do
+        table.insert(keys, k)
+    end
+    -- Longest first; equal lengths are ordered by the key itself so the result does not depend on
+    -- table iteration order (adding an unrelated entry used to be able to flip which of two
+    -- equally long keys won).
+    table.sort(keys, function(a, b)
+        local la, lb = string.len(a), string.len(b)
+        if la ~= lb then return la > lb end
+        return a < b
+    end)
+    outSortedKeysCache = keys
+    outSortedKeysCount = count
+    return keys
+end
+
+function WoWTranslate_CheckOutGlossaryPartial(text)
+    local sortedKeys = GetOutSortedKeys()
 
     local function isAlphanumeric(byte)
         return byte and (

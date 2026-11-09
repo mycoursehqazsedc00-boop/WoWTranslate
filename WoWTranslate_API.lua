@@ -179,6 +179,28 @@ end
 -- POLLING SYSTEM
 -- ============================================================================
 
+-- Split a DLL result "requestId|translation|error".
+-- The translation may itself contain "|" (for example "WTS | 100g"), but the error text
+-- never does, so the error is whatever follows the LAST pipe.
+-- (Splitting at the second pipe cut such translations short and turned the rest into an error.)
+local function ParseResult(result)
+    local firstPipe = string.find(result, "|", 1, true)
+    if not firstPipe then return nil end
+    local lastPipe = nil
+    local pos = firstPipe
+    while true do
+        local p = string.find(result, "|", pos + 1, true)
+        if not p then break end
+        lastPipe = p
+        pos = p
+    end
+    local requestId = string.sub(result, 1, firstPipe - 1)
+    if lastPipe then
+        return requestId, string.sub(result, firstPipe + 1, lastPipe - 1), string.sub(result, lastPipe + 1)
+    end
+    return requestId, string.sub(result, firstPipe + 1), ""
+end
+
 -- Poll DLL for completed translations
 local function PollTranslations()
     if not dllAvailable then return end
@@ -195,20 +217,8 @@ local function PollTranslations()
 
     if success and result and result ~= "" then
         -- Parse result format: "requestId|translation|error"
-        local firstPipe = string.find(result, "|", 1, true)
-        if firstPipe then
-            local requestId = string.sub(result, 1, firstPipe - 1)
-            local remainder = string.sub(result, firstPipe + 1)
-
-            local secondPipe = string.find(remainder, "|", 1, true)
-            local translation, err
-            if secondPipe then
-                translation = string.sub(remainder, 1, secondPipe - 1)
-                err = string.sub(remainder, secondPipe + 1)
-            else
-                translation = remainder
-                err = ""
-            end
+        local requestId, translation, err = ParseResult(result)
+        if requestId then
 
             if requestId and pendingRequests[requestId] then
                 local req = pendingRequests[requestId]

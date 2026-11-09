@@ -1683,6 +1683,76 @@ WoWTranslateGlossary["暗月马戏团"]   = "Darkmoon Faire"
 WoWTranslateGlossary["暗月"]         = "Darkmoon"
 
 -- ============================================================================
+-- SHORTHAND FROM THE COMMUNITY TRANSLATION TABLE (Turtle WoW)
+-- Only multi-character, low-ambiguity terms are listed. Single characters, bare digits
+-- and other generic words are deliberately left out: partial matching replaces them inside
+-- ordinary sentences (e.g. the 2 in "3=2", or 力 in 能力).
+-- ============================================================================
+-- class
+WoWTranslateGlossary["ZST"] = "Warrior Tank"
+WoWTranslateGlossary["zst"] = "Warrior Tank"
+WoWTranslateGlossary["QST"] = "Paladin Tank"
+WoWTranslateGlossary["qst"] = "Paladin Tank"
+WoWTranslateGlossary["破甲贼"] = "Expose Armor Rogue"
+WoWTranslateGlossary["科技LR"] = "Hunter (pet holds boss)"
+WoWTranslateGlossary["开怪LR"] = "Hunter (pulls boss)"
+WoWTranslateGlossary["跳怪LR"] = "Hunter (skips trash with pet)"
+WoWTranslateGlossary["电萨"] = "Elemental Shaman"
+WoWTranslateGlossary["火萨"] = "Fire Shaman"
+WoWTranslateGlossary["鸟D"] = "Balance Druid"
+WoWTranslateGlossary["猫D"] = "Feral Druid"
+WoWTranslateGlossary["高精灵"] = "High Elf"
+
+-- callouts
+WoWTranslateGlossary["可以召唤"] = "can summon"
+WoWTranslateGlossary["要拉吗"] = "summon?"
+WoWTranslateGlossary["拉我"] = "summon me"
+WoWTranslateGlossary["需要拉"] = "need a summon"
+WoWTranslateGlossary["马戏团"] = "Darkmoon Faire"
+WoWTranslateGlossary["寻找代工"] = "looking for a crafter"
+WoWTranslateGlossary["代工"] = "crafting commission"
+WoWTranslateGlossary["拍buff"] = "cast buffs"
+WoWTranslateGlossary["拍BUFF"] = "cast buffs"
+WoWTranslateGlossary["hhh"] = "LOL"
+WoWTranslateGlossary["3Q"] = "thanks"
+WoWTranslateGlossary["3q"] = "thanks"
+
+-- turtle wow instances
+WoWTranslateGlossary["FMH"] = "Frostmane Hollow"
+WoWTranslateGlossary["fmh"] = "Frostmane Hollow"
+WoWTranslateGlossary["霜鬃谷"] = "Frostmane Hollow"
+WoWTranslateGlossary["WHC"] = "Windhorn Canyon"
+WoWTranslateGlossary["whc"] = "Windhorn Canyon"
+WoWTranslateGlossary["DMR"] = "Dragonmaw Retreat"
+WoWTranslateGlossary["dmr"] = "Dragonmaw Retreat"
+WoWTranslateGlossary["龙爪居所"] = "Dragonmaw Retreat"
+WoWTranslateGlossary["SWC"] = "Stormwrought Ruins"
+WoWTranslateGlossary["swc"] = "Stormwrought Ruins"
+WoWTranslateGlossary["HFQ"] = "Hateforge Quarry"
+WoWTranslateGlossary["hfq"] = "Hateforge Quarry"
+WoWTranslateGlossary["SWV"] = "Stormwind Vault"
+WoWTranslateGlossary["swv"] = "Stormwind Vault"
+WoWTranslateGlossary["LKH"] = "Lower Karazhan Halls"
+WoWTranslateGlossary["lkh"] = "Lower Karazhan Halls"
+WoWTranslateGlossary["TMH"] = "Timbermaw Hold"
+WoWTranslateGlossary["tmh"] = "Timbermaw Hold"
+WoWTranslateGlossary["木喉"] = "Timbermaw Hold"
+WoWTranslateGlossary["Kara40"] = "Karazhan 40"
+WoWTranslateGlossary["kara40"] = "Karazhan 40"
+WoWTranslateGlossary["卡40"] = "Karazhan 40"
+WoWTranslateGlossary["HLMM"] = "Onyxia"
+WoWTranslateGlossary["hlmm"] = "Onyxia"
+WoWTranslateGlossary["黑石塔下"] = "LBRS"
+WoWTranslateGlossary["黑石塔上"] = "UBRS"
+WoWTranslateGlossary["HSY"] = "BRD"
+WoWTranslateGlossary["hsy"] = "BRD"
+WoWTranslateGlossary["矮子本"] = "Gnomeregan"
+WoWTranslateGlossary["血色三本"] = "Scarlet Monastery"
+WoWTranslateGlossary["小监狱"] = "Stockade"
+WoWTranslateGlossary["XY Tuan"] = "SR run (make-a-wish raid)"
+WoWTranslateGlossary["Xuyuan tuan"] = "SR run (make-a-wish raid)"
+
+-- ============================================================================
 -- GLOSSARY LOOKUP FUNCTIONS
 -- ============================================================================
 
@@ -1694,21 +1764,46 @@ function WoWTranslate_CheckGlossaryExact(text)
     return nil, nil
 end
 
+-- Keys sorted longest first. Sorting ~1300 keys for every message was the main cost of a
+-- partial lookup, so the sorted list is built once and rebuilt only if the number of keys changes.
+local sortedKeysCache = nil
+local sortedKeysCount = 0
+
+local function GetSortedKeys()
+    local count = 0
+    for _ in pairs(WoWTranslateGlossary) do count = count + 1 end
+    if sortedKeysCache and count == sortedKeysCount then
+        return sortedKeysCache
+    end
+    local keys = {}
+    for k, _ in pairs(WoWTranslateGlossary) do
+        table.insert(keys, k)
+    end
+    -- Longest first; equal lengths are ordered by the key itself so the result does not depend on
+    -- table iteration order (adding an unrelated entry used to be able to flip which of two
+    -- equally long keys won).
+    table.sort(keys, function(a, b)
+        local la, lb = string.len(a), string.len(b)
+        if la ~= lb then return la > lb end
+        return a < b
+    end)
+    sortedKeysCache = keys
+    sortedKeysCount = count
+    return keys
+end
+
+local function IsAsciiAlnum(byte)
+    return byte and (
+        (byte >= 65 and byte <= 90) or
+        (byte >= 97 and byte <= 122) or
+        (byte >= 48 and byte <= 57)
+    )
+end
+
 -- Check glossary for partial matches and replace terms in text
 function WoWTranslate_CheckGlossaryPartial(text)
-    local sortedKeys = {}
-    for k, _ in pairs(WoWTranslateGlossary) do
-        table.insert(sortedKeys, k)
-    end
-    table.sort(sortedKeys, function(a, b) return string.len(a) > string.len(b) end)
-
-    local function isAlphanumeric(byte)
-        return byte and (
-            (byte >= 65 and byte <= 90) or
-            (byte >= 97 and byte <= 122) or
-            (byte >= 48 and byte <= 57)
-        )
-    end
+    local sortedKeys = GetSortedKeys()
+    local isAlphanumeric = IsAsciiAlnum
 
     -- Find all non-overlapping matches in the ORIGINAL text only.
     -- Never scan the replacement values — that's what caused "wAlterac Valleye Goldoodbye".
@@ -1762,7 +1857,10 @@ function WoWTranslate_CheckGlossaryPartial(text)
                 table.insert(matches, {
                     startPos    = startPos,
                     endPos      = endPos,
-                    replacement = WoWTranslateGlossary[key]
+                    replacement = WoWTranslateGlossary[key],
+                    -- does the matched key start / end with a non-ASCII (Chinese) byte?
+                    startsWide  = string.byte(text, startPos) > 127,
+                    endsWide    = string.byte(text, endPos) > 127
                 })
             end
 
@@ -1775,19 +1873,38 @@ function WoWTranslate_CheckGlossaryPartial(text)
     end
 
     -- Reconstruct: paste untouched spans between replacements.
+    -- Chinese has no spaces, so two replacements that touch each other (来个MS -> "Need" "Priest")
+    -- or a replacement that touches ASCII text across a Chinese edge would be glued together.
+    -- A space is inserted there. Glue inside an ASCII word (ZGs -> "Zul'Gurubs") is kept.
     table.sort(matches, function(a, b) return a.startPos < b.startPos end)
 
     local parts = {}
     local lastEnd = 0
+    local prev = nil          -- { text=..., isRepl=..., endsWide=... } of the previous part
+    local function push(str, isRepl, startsWide, endsWide)
+        if prev and str ~= "" then
+            local pe = string.byte(prev.text, string.len(prev.text))
+            local ns = string.byte(str, 1)
+            if IsAsciiAlnum(pe) and IsAsciiAlnum(ns) then
+                local needSpace = false
+                if prev.isRepl and isRepl then needSpace = true
+                elseif prev.isRepl and prev.endsWide then needSpace = true
+                elseif isRepl and startsWide then needSpace = true end
+                if needSpace then table.insert(parts, " ") end
+            end
+        end
+        table.insert(parts, str)
+        if str ~= "" then prev = { text = str, isRepl = isRepl, endsWide = endsWide } end
+    end
     for _, m in ipairs(matches) do
         if m.startPos > lastEnd + 1 then
-            table.insert(parts, string.sub(text, lastEnd + 1, m.startPos - 1))
+            push(string.sub(text, lastEnd + 1, m.startPos - 1), false, false, false)
         end
-        table.insert(parts, m.replacement)
+        push(m.replacement, true, m.startsWide, m.endsWide)
         lastEnd = m.endPos
     end
     if lastEnd < textLen then
-        table.insert(parts, string.sub(text, lastEnd + 1))
+        push(string.sub(text, lastEnd + 1), false, false, false)
     end
 
     return table.concat(parts, ""), "glossary_partial"
