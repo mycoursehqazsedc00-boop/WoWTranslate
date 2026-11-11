@@ -2888,9 +2888,13 @@ local function HookChatFrames(force)
                                     ResolveNamesAndPost(ReconstructMessage(segments, glossaryResult), PostWTMsg)
                                     return
                                 end
-                                local partialResult = WoWTranslate_CheckGlossaryPartial(plainText)
+                                -- withItems: also resolve Chinese item names typed without a link
+                                local partialResult = WoWTranslate_CheckGlossaryPartial(plainText, true)
                                 if partialResult then
-                                    if not DetectSourceLanguage(partialResult) then
+                                    -- DetectSourceLanguage answers "en" for any English text, so "nothing left to
+                                    -- translate" means: no foreign-script characters remain (nil or "en").
+                                    local leftover = DetectSourceLanguage(partialResult)
+                                    if not leftover or leftover == "en" then
                                         DebugLog("Glossary full partial:", partialResult)
                                         WoWTranslate_CacheSave(capturedArg1, partialResult)
                                         frameTranslationTargets[capturedArg1] = nil

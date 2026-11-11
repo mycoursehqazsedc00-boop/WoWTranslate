@@ -1,7 +1,7 @@
 ## Interface: 11200
 ## Title: WoWTranslate
 ## Notes: Real-time chat translation for WoW 1.12
-## Version: 2.0
+## Version: 2.1
 ## Author: belthazor, WoWTranslateTeam
 ## SavedVariables: WoWTranslateDB WoWTranslateCache WoWTranslateDict WoWTranslateItemNames WoWTranslateDebugLog
 
@@ -10,6 +10,7 @@ WoWTranslate_OutGlossary.lua
 WoWTranslate_Emotes.lua
 WoWTranslate_SharedDict.lua
 WoWTranslate_Cache.lua
+WoWTranslate_ItemData.lua
 WoWTranslate_ItemNames.lua
 WoWTranslate_API.lua
 WoWTranslate_Config.lua

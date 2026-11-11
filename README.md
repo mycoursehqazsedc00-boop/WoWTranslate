@@ -7,7 +7,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/WoW-1.12-blue" alt="WoW 1.12">
-  <img src="https://img.shields.io/badge/version-2.0-green" alt="Version 2.0">
+  <img src="https://img.shields.io/badge/version-2.1-green" alt="Version 2.1">
 </p>
 
 This is a fork of [sanjaygbhat/wow-translate](https://github.com/sanjaygbhat/wow-translate) (original authors: belthazor and the WoWTranslate team). It keeps the original feature set and adds a persistent item-name store, a ranked self-pruning cache, a user dictionary, a read-only shared dictionary layer and a few filters that stop useless text from being sent to the translation service. See [What changed](#what-changed-compared-to-the-original) for the full comparison.
@@ -54,10 +54,13 @@ No other client mod (SuperWoW, Nampower, ClassicAPI, VanillaHelpers) is required
 | 🈂️ **Stricter Japanese detection** | Full-width CJK punctuation no longer counts as Japanese text, so punctuation-only messages are not sent to the translation service. |
 | 🐞 **Pipe-safe results** | A translation that contains a `\|` character (for example `WTS \| 100g`) is delivered intact. Before, it was cut at the pipe and reported as a failure. |
 | ✏️ **Fix a translation without typing Chinese** | `/wt recent` lists the last translated lines and `/wt fix <n> <text>` saves your own wording to the user dictionary. |
-| 🔎 **Tracing** | `/wt debug` also logs which source answered a lookup, cache pruning, skipped emote-only text and reverse pairs. `/wt log` shows the latest entries. |
+| 🔎 **Tracing** | `/wt debug` also logs which source answered a lookup, cache pruning, skipped emote-only text, reverse pairs, item names from the store or the bundled table, item names found in plain text, and lines posted locally by the glossary. `/wt log` shows the latest entries. |
 | 📘 **Turtle WoW shorthand in the glossary** | 58 entries from the community translation table: build tags (ZST, QST, 科技LR, 开怪LR, 跳怪LR, 电萨, 鸟D, 猫D...), summon and crafting callouts, Turtle WoW dungeons and raids (FMH, WHC, DMR, HFQ, SWV, LKH, TMH, Kara40, HLMM...), 3Q and hhh. |
 | 🧩 **Cleaner glossary replacements** | Replacements that touch each other across Chinese text are separated by a space (`来个MS` gave `NeedPriest`, now `Need Priest`). |
 | ⚡ **Faster glossary lookup** | The sorted key list is built once instead of for every partial lookup (about 5 to 8 times faster in the test harness). |
+| 📦 **Item names without the server** | A bundled table of 6,111 item names (item ID to English name) is the last fallback for item links, after the client and the names stored from earlier sessions. On an English client a link resolves at once, with no server query and no wait, even right after the `WDB` folder was deleted. |
+| 🧾 **Item names typed without a link** | Chinese item names of four or more characters are replaced by their English names (5,233 names). Names of two or three characters, and names that map to more than one English name, are left out on purpose. A glossary entry wins when a name is also a glossary key. |
+| ✅ **Local posting of fully glossary-translated lines** | A line whose Chinese is completely covered by the glossary (and item names) is posted directly. Before, it was still sent to the translation service, because English text always counted as "something to translate". |
 | 🌐 **Shared dictionary layer** | An optional read-only data file, `WoWTranslate_SharedDict.lua`, checked after the cache. It ships empty and is maintained by hand. |
 
 ---
@@ -127,7 +130,7 @@ Ranking score is `hits / (1 + ageInDays / 7)`. All thresholds are constants at t
 
 ## What changed compared to the original
 
-| Area | Original (1.5) | This fork (2.0) |
+| Area | Original (1.5) | This fork (2.1) |
 |------|----------------|-----------------|
 | Item names in links | Read only from the game's `WDB` cache. After the folder is deleted, every item link is requested from the server and the chat message is held for up to 3 seconds. | Names are stored per item ID and per client locale, so previously seen items resolve instantly. Cleared automatically if the client locale changes. |
 | Translation cache | Exact-match strings, unbounded, never expires. | Entries carry hit count and last-used day; stale and low-value entries are pruned at login; frequent entries are protected. |
@@ -140,6 +143,9 @@ Ranking score is `hits / (1 + ageInDays / 7)`. All thresholds are constants at t
 | Debugging | `/wt debug` logged the chat pipeline only. | Cache, item-name, prune and emote decisions are logged too. |
 | Glossary coverage of Turtle WoW shorthand | 120 of 230 spellings in the community table. | 147 of 230; the rest are deliberately excluded or conflict (see Glossary notes). |
 | Glossary partial lookup | Sorted all keys on every call, so results for equal-length keys depended on table order. | Sorted once and cached; ties are alphabetical, so results are stable. |
+| Item names in links, `WDB` wiped | Needed a server query per item and held the message for up to 3 seconds. | The name comes from the client, the names stored earlier or the bundled table, whichever has it first, so there is no wait. |
+| Item names typed as plain Chinese text | Sent to the translation service, which often renders them as ordinary words. | Replaced with the official English name before translation. |
+| Lines fully covered by the glossary | Sent to the translation service anyway. | Posted locally. |
 | `/wt clearcache` | Cleared the translation cache. | Also clears the item-name store; the user dictionary is kept. |
 
 Saved variables added by this fork: `WoWTranslateDict` and `WoWTranslateItemNames`.
@@ -154,6 +160,16 @@ Saved variables added by this fork: `WoWTranslateDict` and `WoWTranslateItemName
 - Single characters, bare digits and generic words are left out on purpose, because partial matching would rewrite ordinary text (the `2` in `(3=2)`, the `力` in `能力`). Isolated numeric slang such as `88`, `110`, `666` and `999` is handled in `PreprocessIncoming`.
 - Two entries of the community table were not taken over because they conflict with existing, more likely readings: `KBZ` stays Fury Warrior (the table lists it as Arms) and `RL` stays raid leader (the table lists it as Human).
 
+### Item data
+
+`WoWTranslate_ItemData.lua` is generated from AtlasLoot (Turtle WoW Edition) and its zhCN fork:
+
+```
+python qa/tools/gen_itemdata.py <English AtlasLoot dir> <zhCN AtlasLoot dir> Interface/AddOns/WoWTranslate/WoWTranslate_ItemData.lua
+```
+
+It holds `WoWTranslate_ItemEN` (item ID to English name) and `WoWTranslate_ItemZH` (Chinese name to English name). The English table is only used when the game client itself is English. The minimum name length for plain-text matching is `MIN_NAME_BYTES` at the top of `WoWTranslate_ItemNames.lua`.
+
 ## Testing
 
 The `qa/` folder holds a regression suite that loads the real addon files into a small WoW 1.12 mock and runs them on a standard Lua interpreter (developed with Lua 5.4):
@@ -162,13 +178,14 @@ The `qa/` folder holds a regression suite that loads the real addon files into a
 sh qa/run_all.sh Interface/AddOns/WoWTranslate [path/to/original/WoWTranslate] [lua]
 ```
 
-With the second argument (a copy of the original addon) the A/B suites run against both versions: DLL result parsing, cache API compatibility, item names after a `WDB` wipe, language detection on a corpus, glossary lookups on about 4,500 generated lines (with the data held constant to isolate code changes), and an end-to-end incoming-chat simulation. `qa/REPORT.md` records the latest run. The mock does not replace testing inside the game client.
+With the second argument (a copy of the original addon) the A/B suites run against both versions: DLL result parsing, cache API compatibility, item names after a `WDB` wipe, language detection on a corpus, glossary lookups on about 4,500 generated lines (with the data held constant to isolate code changes), the item data, and an end-to-end incoming-chat simulation. `qa/REPORT.md` records the latest run. The mock does not replace testing inside the game client.
 
 ## Credits
 
 - Original WoWTranslate: belthazor and the WoWTranslate team ([sanjaygbhat/wow-translate](https://github.com/sanjaygbhat/wow-translate)).
 - Kaomoji codes used by the skip filter come from the TwitchEmotes+ kaomoji list (`Data/Kaomoji.lua`).
 - DLL hooking uses [MinHook](https://github.com/TsudaKageyu/minhook).
+- Item names: AtlasLoot (Turtle WoW Edition) authors and the AtlasLoot zhCN fork, whose data tables `WoWTranslate_ItemData.lua` is generated from.
 
 ## License
 

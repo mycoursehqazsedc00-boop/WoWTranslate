@@ -1800,8 +1800,10 @@ local function IsAsciiAlnum(byte)
     )
 end
 
--- Check glossary for partial matches and replace terms in text
-function WoWTranslate_CheckGlossaryPartial(text)
+-- Check glossary for partial matches and replace terms in text.
+-- withItems = true also claims known Chinese item names first (WoWTranslate_FindItemNames),
+-- so glossary keys such as 铜 can not rewrite the inside of a name like 青铜龙军团的徽记之戒.
+function WoWTranslate_CheckGlossaryPartial(text, withItems)
     local sortedKeys = GetSortedKeys()
     local isAlphanumeric = IsAsciiAlnum
 
@@ -1809,6 +1811,14 @@ function WoWTranslate_CheckGlossaryPartial(text)
     -- Never scan the replacement values — that's what caused "wAlterac Valleye Goldoodbye".
     local matches = {}
     local textLen = string.len(text)
+
+    if withItems and WoWTranslate_FindItemNames then
+        local items = WoWTranslate_FindItemNames(text)
+        if items then
+            for i = 1, table.getn(items) do table.insert(matches, items[i]) end
+            if WoWTranslate_Trace then WoWTranslate_Trace("Item names found in text:", table.getn(items), items[1].replacement) end
+        end
+    end
 
     for _, key in ipairs(sortedKeys) do
         local keyLen = string.len(key)
