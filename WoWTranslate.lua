@@ -3232,6 +3232,99 @@ local function HookedSendChatMessage(msg, chatType, language, channel)
     end)
 end
 
+-- ============================================================================
+-- PUBLIC API FOR OTHER ADDONS (used by AutoMessage)
+-- ============================================================================
+
+-- Send a chat message without going through outgoing translation.
+function WoWTranslate_SendRaw(msg, chatType, language, channel)
+    return originalSendChatMessage(msg, chatType, language, channel)
+end
+
+-- Translate an outgoing message the way the outgoing hook does (links kept, outgoing
+-- glossary, prefix, 255 byte limit) but do NOT send it.
+-- callback(finalMsg, err) is called once; finalMsg is nil when translation failed.
+-- Text that needs no translation (empty, macro or dot commands, addon traffic, text already
+-- in the target language) is passed back unchanged, immediately.
+-- Returns true when the callback has been, or will be, called.
+function WoWTranslate_PrepareOutgoing(msg, callback)
+    if type(callback) ~= "function" then return false end
+    if not msg or msg == "" then callback(msg); return true end
+    if string.sub(msg, 1, 1) == "#" or string.sub(msg, 1, 1) == "." then callback(msg); return true end
+    if string.find(msg, "^[A-Za-z][A-Za-z0-9_]*:%d+:") then callback(msg); return true end
+    if not WoWTranslateDB then callback(nil, "not initialised"); return true end
+    if ContainsOutgoingTargetLanguage(msg) then callback(msg); return true end
+    if not WoWTranslate_API or not WoWTranslate_API.IsAvailable() then
+        callback(nil, "DLL not available")
+        return true
+    end
+
+    local segments = SplitIntoSegments(msg)
+    local textToTranslate = BuildTranslatableText(segments)
+
+    -- Same glossary stage as the outgoing hook.
+    local outFromLang = WoWTranslateDB.outgoingFromLang or "en"
+    if outFromLang == "en" then
+        textToTranslate = PreprocessOutgoing(textToTranslate)
+        if WoWTranslate_CheckOutGlossaryExact then
+            local glossaryResult = WoWTranslate_CheckOutGlossaryExact(textToTranslate)
+            if not glossaryResult and WoWTranslate_CheckOutGlossaryPartial then
+                glossaryResult = WoWTranslate_CheckOutGlossaryPartial(textToTranslate)
+            end
+            if glossaryResult then textToTranslate = glossaryResult end
+        end
+    else
+        if WoWTranslate_CheckGlossaryExact then
+            local glossaryResult = WoWTranslate_CheckGlossaryExact(textToTranslate)
+            if not glossaryResult and WoWTranslate_CheckGlossaryPartial then
+                glossaryResult = WoWTranslate_CheckGlossaryPartial(textToTranslate)
+            end
+            if glossaryResult then textToTranslate = glossaryResult end
+        end
+    end
+
+    DebugLog("PrepareOutgoing requested:", string.sub(msg, 1, 40))
+    WoWTranslate_API.TranslateOutgoing(textToTranslate, function(translation, err)
+        if not translation then
+            DebugLog("PrepareOutgoing failed:", err)
+            callback(nil, err or "translation failed")
+            return
+        end
+        local reconstructed = ReconstructMessage(segments, translation)
+        local finalMsg
+        if WoWTranslateDB.outgoingPrefixEnabled then
+            local userPrefix = WoWTranslateDB.outgoingPrefix or DEFAULT_PREFIX
+            local prefix
+            if userPrefix == DEFAULT_PREFIX then
+                local targetLang = WoWTranslateDB.outgoingToLang or "zh"
+                prefix = TRANSLATED_PREFIXES[targetLang] or userPrefix
+            else
+                prefix = userPrefix
+            end
+            finalMsg = prefix .. " " .. reconstructed
+        else
+            finalMsg = reconstructed
+        end
+        local wasTruncated = false
+        if string.len(finalMsg) > 255 then
+            finalMsg = string.sub(finalMsg, 1, 252) .. "..."
+            wasTruncated = true
+        end
+        -- Reverse pair, as in the hook: the echo of this line shows the original text.
+        if not wasTruncated then
+            local original = BuildTranslatableText(segments)
+            if original and original ~= "" then
+                WoWTranslate_CacheSave(reconstructed, original, true)
+                if finalMsg ~= reconstructed then
+                    WoWTranslate_CacheSave(finalMsg, original, true)
+                end
+            end
+        end
+        callback(finalMsg)
+    end)
+    return true
+end
+
 -- Track if hook is installed (for diagnostics)
 local outgoingHookInstalled = false
 

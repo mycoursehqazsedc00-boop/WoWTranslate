@@ -7,7 +7,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/WoW-1.12-blue" alt="WoW 1.12">
-  <img src="https://img.shields.io/badge/version-2.1-green" alt="Version 2.1">
+  <img src="https://img.shields.io/badge/version-2.2-green" alt="Version 2.2">
 </p>
 
 This is a fork of [sanjaygbhat/wow-translate](https://github.com/sanjaygbhat/wow-translate) (original authors: belthazor and the WoWTranslate team). It keeps the original feature set and adds a persistent item-name store, a ranked self-pruning cache, a user dictionary, a read-only shared dictionary layer and a few filters that stop useless text from being sent to the translation service. See [What changed](#what-changed-compared-to-the-original) for the full comparison.
@@ -61,6 +61,7 @@ No other client mod (SuperWoW, Nampower, ClassicAPI, VanillaHelpers) is required
 | 📦 **Item names without the server** | A bundled table of 6,111 item names (item ID to English name) is the last fallback for item links, after the client and the names stored from earlier sessions. On an English client a link resolves at once, with no server query and no wait, even right after the `WDB` folder was deleted. |
 | 🧾 **Item names typed without a link** | Chinese item names of four or more characters are replaced by their English names (5,233 names). Names of two or three characters, and names that map to more than one English name, are left out on purpose. A glossary entry wins when a name is also a glossary key. |
 | ✅ **Local posting of fully glossary-translated lines** | A line whose Chinese is completely covered by the glossary (and item names) is posted directly. Before, it was still sent to the translation service, because English text always counted as "something to translate". |
+| 🔌 **Public API for other addons** | `WoWTranslate_PrepareOutgoing` translates a message the way the outgoing hook does but does not send it, and `WoWTranslate_SendRaw` sends without translation. Used by AutoMessage 2.0 to translate a repeating message once. |
 | 🌐 **Shared dictionary layer** | An optional read-only data file, `WoWTranslate_SharedDict.lua`, checked after the cache. It ships empty and is maintained by hand. |
 
 ---
@@ -130,7 +131,7 @@ Ranking score is `hits / (1 + ageInDays / 7)`. All thresholds are constants at t
 
 ## What changed compared to the original
 
-| Area | Original (1.5) | This fork (2.1) |
+| Area | Original (1.5) | This fork (2.2) |
 |------|----------------|-----------------|
 | Item names in links | Read only from the game's `WDB` cache. After the folder is deleted, every item link is requested from the server and the chat message is held for up to 3 seconds. | Names are stored per item ID and per client locale, so previously seen items resolve instantly. Cleared automatically if the client locale changes. |
 | Translation cache | Exact-match strings, unbounded, never expires. | Entries carry hit count and last-used day; stale and low-value entries are pruned at login; frequent entries are protected. |
@@ -146,6 +147,7 @@ Ranking score is `hits / (1 + ageInDays / 7)`. All thresholds are constants at t
 | Item names in links, `WDB` wiped | Needed a server query per item and held the message for up to 3 seconds. | The name comes from the client, the names stored earlier or the bundled table, whichever has it first, so there is no wait. |
 | Item names typed as plain Chinese text | Sent to the translation service, which often renders them as ordinary words. | Replaced with the official English name before translation. |
 | Lines fully covered by the glossary | Sent to the translation service anyway. | Posted locally. |
+| Use from other addons | Only through the global `SendChatMessage` hook, which translated every send. | `WoWTranslate_PrepareOutgoing` and `WoWTranslate_SendRaw` (see Public API). |
 | `/wt clearcache` | Cleared the translation cache. | Also clears the item-name store; the user dictionary is kept. |
 
 Saved variables added by this fork: `WoWTranslateDict` and `WoWTranslateItemNames`.
@@ -159,6 +161,15 @@ Saved variables added by this fork: `WoWTranslateDict` and `WoWTranslateItemName
 - ASCII keys of up to three characters only match whole words; Chinese keys match anywhere.
 - Single characters, bare digits and generic words are left out on purpose, because partial matching would rewrite ordinary text (the `2` in `(3=2)`, the `力` in `能力`). Isolated numeric slang such as `88`, `110`, `666` and `999` is handled in `PreprocessIncoming`.
 - Two entries of the community table were not taken over because they conflict with existing, more likely readings: `KBZ` stays Fury Warrior (the table lists it as Arms) and `RL` stays raid leader (the table lists it as Human).
+
+### Public API
+
+| Function | Description |
+|----------|-------------|
+| `WoWTranslate_PrepareOutgoing(msg, callback)` | Translates `msg` like the outgoing hook (links kept, outgoing glossary, prefix, 255 byte limit) without sending it. `callback(finalMsg, err)` is called once; `finalMsg` is `nil` on failure (`err` says why). Text that needs no translation (empty, `#` or `.` commands, addon traffic, text already in the target language) is returned unchanged and immediately. The reverse pair is stored, so the echo of the sent line shows the original text. Returns `false` only when `callback` is not a function. |
+| `WoWTranslate_SendRaw(msg, chatType, language, channel)` | Sends a chat message without outgoing translation. |
+
+Test for the functions with `if WoWTranslate_PrepareOutgoing then ... end`; older versions do not have them.
 
 ### Item data
 
@@ -178,7 +189,7 @@ The `qa/` folder holds a regression suite that loads the real addon files into a
 sh qa/run_all.sh Interface/AddOns/WoWTranslate [path/to/original/WoWTranslate] [lua]
 ```
 
-With the second argument (a copy of the original addon) the A/B suites run against both versions: DLL result parsing, cache API compatibility, item names after a `WDB` wipe, language detection on a corpus, glossary lookups on about 4,500 generated lines (with the data held constant to isolate code changes), the item data, and an end-to-end incoming-chat simulation. `qa/REPORT.md` records the latest run. The mock does not replace testing inside the game client.
+With the second argument (a copy of the original addon) the A/B suites run against both versions: DLL result parsing, cache API compatibility, item names after a `WDB` wipe, language detection on a corpus, glossary lookups on about 4,500 generated lines (with the data held constant to isolate code changes), the item data, the public API against the outgoing hook, and an end-to-end incoming-chat simulation. `qa/REPORT.md` records the latest run. The mock does not replace testing inside the game client.
 
 ## Credits
 
