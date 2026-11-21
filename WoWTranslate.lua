@@ -1111,6 +1111,10 @@ local function ResolvePlayerClass(rawName, unit)
         local _, class = UnitClass(unit)
         if class then return class end
     end
+    if CLASSIC_API_VERSION and C_PlayerCache and type(C_PlayerCache.GetPlayerInfoByName) == "function" then
+        local _, class = C_PlayerCache.GetPlayerInfoByName(rawName)
+        if class then return class end
+    end
     return nil
 end
 
@@ -1794,12 +1798,16 @@ local function OverheadDisplayMatchesRawName(text, rawName)
     return StripOverheadDisplaySuffix(text) == rawName
 end
 
--- Class from ShaguTweaks player scan (no unit id probes).
+-- Class from ShaguTweaks player scan or ClassicAPI C_PlayerCache (no unit id probes).
 local function GetPlayerClassFromName(rawName)
     if not rawName or rawName == "" then return nil end
     if ShaguTweaks and ShaguTweaks.GetUnitData then
         local class = ShaguTweaks.GetUnitData(rawName)
         if class and class ~= "UNKNOWN" and class ~= UNKNOWN then return class end
+    end
+    if CLASSIC_API_VERSION and C_PlayerCache and type(C_PlayerCache.GetPlayerInfoByName) == "function" then
+        local _, class = C_PlayerCache.GetPlayerInfoByName(rawName)
+        if class then return class end
     end
     return nil
 end
@@ -2315,10 +2323,10 @@ local lftHooked = false
 -- the same group and update the text widget.
 local function LFT_ApplyTranslation(entryId, isTitle, translated)
     for i = 1, 8 do
-        local btn = _G["LFTFrameGroupEntry"..i]
+        local btn = getglobal("LFTFrameGroupEntry"..i)
         if btn and btn:IsShown() and btn.data and btn.data.id == entryId then
             local suffix = isTitle and "Text" or "SubText"
-            local widget = _G["LFTFrameGroupEntry"..i..suffix]
+            local widget = getglobal("LFTFrameGroupEntry"..i..suffix)
             if widget then widget:SetText(translated) end
         end
     end
@@ -2366,7 +2374,7 @@ local function LFT_ScanVisibleEntries()
     if not WoWTranslateDB or not WoWTranslateDB.translateGroupFinder then return end
     if not WoWTranslateDB.enabled then return end
     for i = 1, 8 do
-        local btn = _G["LFTFrameGroupEntry"..i]
+        local btn = getglobal("LFTFrameGroupEntry"..i)
         if btn and btn:IsShown() and btn.data then
             local entry = btn.data
             LFT_TranslateField(entry.id, entry.title, true)
@@ -2636,7 +2644,7 @@ local function HookChatFrames(force)
                     frame.WoWTranslate_OrigScript = origScript  -- persist for safe re-hook
                     frame.WoWTranslateHooked = true
 
-                    frame:SetScript("OnEvent", function()
+                    local wrapperFunc = function()
                         hookCallCount = hookCallCount + 1
 
                         -- Capture event globals before origScript may clobber them
@@ -2876,33 +2884,35 @@ local function HookChatFrames(force)
                                     end
                                 end
                             else
-                                -- Preprocess: currency (XG = gold, XY = silver), 88 = bye, 110 = patrol
-                                plainText = PreprocessIncoming(plainText)
-                                textToTranslate = plainText
-                                -- CJK/Russian source: apply ZH→EN incoming glossary
-                                local glossaryResult = WoWTranslate_CheckGlossaryExact(plainText)
-                                if glossaryResult then
-                                    DebugLog("Glossary exact:", glossaryResult)
-                                    WoWTranslate_CacheSave(capturedArg1, glossaryResult)
-                                    frameTranslationTargets[capturedArg1] = nil
-                                    ResolveNamesAndPost(ReconstructMessage(segments, glossaryResult), PostWTMsg)
-                                    return
-                                end
-                                -- withItems: also resolve Chinese item names typed without a link
-                                local partialResult = WoWTranslate_CheckGlossaryPartial(plainText, true)
-                                if partialResult then
-                                    -- DetectSourceLanguage answers "en" for any English text, so "nothing left to
-                                    -- translate" means: no foreign-script characters remain (nil or "en").
-                                    local leftover = DetectSourceLanguage(partialResult)
-                                    if not leftover or leftover == "en" then
-                                        DebugLog("Glossary full partial:", partialResult)
-                                        WoWTranslate_CacheSave(capturedArg1, partialResult)
+                                if incomingTargetLang == "en" then
+                                    -- Preprocess: currency (XG = gold, XY = silver), 88 = bye, 110 = patrol
+                                    plainText = PreprocessIncoming(plainText)
+                                    textToTranslate = plainText
+                                    -- CJK/Russian source: apply ZH→EN incoming glossary
+                                    local glossaryResult = WoWTranslate_CheckGlossaryExact(plainText)
+                                    if glossaryResult then
+                                        DebugLog("Glossary exact:", glossaryResult)
+                                        WoWTranslate_CacheSave(capturedArg1, glossaryResult)
                                         frameTranslationTargets[capturedArg1] = nil
-                                        ResolveNamesAndPost(ReconstructMessage(segments, partialResult), PostWTMsg)
+                                        ResolveNamesAndPost(ReconstructMessage(segments, glossaryResult), PostWTMsg)
                                         return
                                     end
-                                    textToTranslate = partialResult
-                                    DebugLog("Glossary pre-processed, sending to API")
+                                    -- withItems: also resolve Chinese item names typed without a link
+                                    local partialResult = WoWTranslate_CheckGlossaryPartial(plainText, true)
+                                    if partialResult then
+                                        -- DetectSourceLanguage answers "en" for any English text, so "nothing left to
+                                        -- translate" means: no foreign-script characters remain (nil or "en").
+                                        local leftover = DetectSourceLanguage(partialResult)
+                                        if not leftover or leftover == "en" then
+                                            DebugLog("Glossary full partial:", partialResult)
+                                            WoWTranslate_CacheSave(capturedArg1, partialResult)
+                                            frameTranslationTargets[capturedArg1] = nil
+                                            ResolveNamesAndPost(ReconstructMessage(segments, partialResult), PostWTMsg)
+                                            return
+                                        end
+                                        textToTranslate = partialResult
+                                        DebugLog("Glossary pre-processed, sending to API")
+                                    end
                                 end
                             end
 
@@ -2917,10 +2927,10 @@ local function HookChatFrames(force)
                             -- replaceMode: capture original args before the API call, but only
                             -- register the 30s safety-net entry for frames whose callback will
                             -- actually fire. WoW fires every chat frame's OnEvent for the same
-                            -- message; the API deduplicates (returns false for frames 2-N).
+                            -- message; the API deduplicates (returns false, "dedup" for frames 2-N).
                             -- Those frames get the translation via frameTranslationTargets.
-                            -- Storing a safety-net entry for deduplicated frames causes the
-                            -- original to reappear 30s later even when translation succeeded.
+                            -- If the request is dropped (queue_full / rate_limited / dll_error),
+                            -- flush the suppressed original immediately so the message is never lost.
                             local replacePendingKey = nil
                             local replacePendingData = nil
                             if pendingArgs then
@@ -2931,10 +2941,13 @@ local function HookChatFrames(force)
                                     r = pendingArgs.b, g = pendingArgs.c, b = pendingArgs.d,
                                     id = pendingArgs.e, holdTime = pendingArgs.g,
                                 }
+                                replacePendingKey = "r|" .. tostring(capturedThis) .. "|" .. capturedArg1
                                 pendingArgs = nil
                             end
 
-                            local apiQueued = WoWTranslate_API.Translate(textToTranslate, function(translation, err)
+                            local callbackHandled = false
+                            local apiQueued, apiReason = WoWTranslate_API.Translate(textToTranslate, function(translation, err)
+                                callbackHandled = true
                                 if translation and translation ~= "" then
                                     DebugLog("Translation:", string.sub(translation, 1, 50))
                                     translationErrWarnShown = false
@@ -2965,9 +2978,9 @@ local function HookChatFrames(force)
                                     frameTranslationTargets[capturedArg1] = nil
                                     -- replaceMode: translation failed — show original immediately.
                                     if replacePendingKey then
-                                        local rp = pendingMessages[replacePendingKey]
+                                        local rp = pendingMessages[replacePendingKey] or replacePendingData
+                                        pendingMessages[replacePendingKey] = nil
                                         if rp then
-                                            pendingMessages[replacePendingKey] = nil
                                             rp.originalAddMessage(rp.frame, rp.originalText,
                                                 rp.r, rp.g, rp.b, rp.id, rp.holdTime)
                                         end
@@ -2978,18 +2991,27 @@ local function HookChatFrames(force)
                                     end
                                 end
                             end, detectedLang)
-                            -- Only store the safety-net entry when this frame's callback will
-                            -- fire (apiQueued=true). Deduplicated frames (false) will receive
-                            -- the translation via frameTranslationTargets when the first frame's
-                            -- callback fires, so their suppressed original can be discarded.
-                            if apiQueued and replacePendingData then
-                                replacePendingKey = "r|" .. tostring(capturedThis) .. "|" .. capturedArg1
-                                replacePendingData.timestamp = GetTime()
-                                pendingMessages[replacePendingKey] = replacePendingData
+
+                            if apiQueued then
+                                if not callbackHandled and replacePendingData then
+                                    replacePendingData.timestamp = GetTime()
+                                    pendingMessages[replacePendingKey] = replacePendingData
+                                end
+                            elseif apiReason ~= "dedup" then
+                                -- Request was dropped (queue full, rate limited, etc.)
+                                frameTranslationTargets[capturedArg1] = nil
+                                if not callbackHandled and replacePendingData then
+                                    replacePendingData.originalAddMessage(replacePendingData.frame,
+                                        replacePendingData.originalText,
+                                        replacePendingData.r, replacePendingData.g, replacePendingData.b,
+                                        replacePendingData.id, replacePendingData.holdTime)
+                                end
                             end
                         end)  -- end pcall
                         if not _ok then DebugLog("OnEvent hook error:", tostring(_err)) end
-                    end)
+                    end
+                    frame.WoWTranslate_Wrapper = wrapperFunc
+                    frame:SetScript("OnEvent", wrapperFunc)
 
                     DebugLog("Hooked", frameName, "via SetScript")
                 end
@@ -3965,15 +3987,24 @@ end)
 
 -- Watchdog: WoW 1.12 replaces SetScript("OnEvent") handlers on chat frames when
 -- certain events fire (channel join, zone change, UPDATE_CHAT_WINDOWS, etc.).
--- Re-install our wrappers every 60s so hooks stay active after such events.
--- pcall prevents a HookChatFrames error from silently killing this OnUpdate.
+-- Check every 60s and only re-install hooks on frames whose OnEvent was replaced.
 local hookWatchdogElapsed = 0
 local hookWatchdogFrame = CreateFrame("Frame")
 hookWatchdogFrame:SetScript("OnUpdate", function()
     hookWatchdogElapsed = hookWatchdogElapsed + arg1
     if hookWatchdogElapsed >= 60 then
         hookWatchdogElapsed = 0
-        pcall(HookChatFrames, true)
+        local needRehook = false
+        for i = 1, NUM_CHAT_WINDOWS do
+            local f = getglobal("ChatFrame" .. i)
+            if f and f.WoWTranslate_Wrapper and f:GetScript("OnEvent") ~= f.WoWTranslate_Wrapper then
+                f.WoWTranslateHooked = false
+                needRehook = true
+            end
+        end
+        if needRehook then
+            pcall(HookChatFrames, false)
+        end
     end
 end)
 
@@ -4051,48 +4082,5 @@ local function ProcessItemCacheMessage(queued)
     end
 end
 
-local itemCacheFrame = CreateFrame("Frame")
-local itemCacheElapsed = 0
-local ITEM_CACHE_POLL_INTERVAL = 0.05  -- Poll every 50ms
-local ITEM_CACHE_MAX_WAIT = 3.0        -- Max wait 3 seconds
-local ITEM_CACHE_RETRY_INTERVAL = 0.5  -- Retry triggering cache every 500ms
-
-itemCacheFrame:SetScript("OnUpdate", function()
-    itemCacheElapsed = itemCacheElapsed + arg1
-    if itemCacheElapsed < ITEM_CACHE_POLL_INTERVAL then
-        return
-    end
-    itemCacheElapsed = 0
-
-    for cacheId, queued in pairs(itemCacheQueue) do
-        local allCached = CheckItemCache(queued.itemIds, false)  -- Just check, don't trigger
-        local elapsed = GetTime() - queued.timestamp
-
-        if allCached then
-            DebugLog("Items cached, processing message:", cacheId)
-            itemCacheQueue[cacheId] = nil
-            ProcessItemCacheMessage(queued)
-        elseif elapsed > ITEM_CACHE_MAX_WAIT then
-            -- Timeout - process anyway with whatever we have
-            local _, stillUncached = CheckItemCache(queued.itemIds, false)
-            DebugLog("Item cache timeout after", elapsed, "sec, uncached:", table.getn(stillUncached))
-            for _, uid in ipairs(stillUncached) do
-                DebugLog("  Still uncached item ID:", uid)
-            end
-            itemCacheQueue[cacheId] = nil
-            ProcessItemCacheMessage(queued)
-        else
-            -- Retry triggering cache periodically for stubborn items
-            if not queued.lastRetry or (GetTime() - queued.lastRetry) > ITEM_CACHE_RETRY_INTERVAL then
-                queued.lastRetry = GetTime()
-                queued.retries = (queued.retries or 0) + 1
-                if queued.retries <= 5 then  -- Max 5 retries
-                    local _, stillUncached = CheckItemCache(queued.itemIds, true)  -- Trigger cache again
-                    if table.getn(stillUncached) > 0 then
-                        DebugLog("Retry", queued.retries, "- triggering cache for", table.getn(stillUncached), "items")
-                    end
-                end
-            end
-        end
-    end
-end)
+-- itemCacheFrame OnUpdate removed: itemCacheQueue is no longer populated (replaced by
+-- WoWTranslate_ItemNames + WoWTranslate_ItemData), avoiding an idle 50ms OnUpdate loop.

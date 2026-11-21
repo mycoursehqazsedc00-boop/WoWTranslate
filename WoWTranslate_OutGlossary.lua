@@ -827,42 +827,46 @@ WoWTranslateOutGlossary["ready?"]           = "来不来？"
 -- OUTGOING GLOSSARY LOOKUP FUNCTIONS
 -- ============================================================================
 
-function WoWTranslate_CheckOutGlossaryExact(text)
-    if WoWTranslateOutGlossary[text] then
-        return WoWTranslateOutGlossary[text]
-    end
-    return nil
-end
-
--- Keys sorted longest first; built once and rebuilt only if the number of keys changes.
+-- Keys sorted longest first (lowercased for case-insensitive matching); built once and cached.
 local outSortedKeysCache = nil
-local outSortedKeysCount = 0
+local outLowerMap = nil
 
-local function GetOutSortedKeys()
-    local count = 0
-    for _ in pairs(WoWTranslateOutGlossary) do count = count + 1 end
-    if outSortedKeysCache and count == outSortedKeysCount then
-        return outSortedKeysCache
-    end
+local function BuildOutGlossaryCache()
+    if outSortedKeysCache then return end
+    local lowerMap = {}
     local keys = {}
-    for k, _ in pairs(WoWTranslateOutGlossary) do
-        table.insert(keys, k)
+    for k, v in pairs(WoWTranslateOutGlossary) do
+        local lk = string.lower(k)
+        if not lowerMap[lk] or lk == k then
+            lowerMap[lk] = v
+        end
+    end
+    for lk, _ in pairs(lowerMap) do
+        table.insert(keys, lk)
     end
     -- Longest first; equal lengths are ordered by the key itself so the result does not depend on
-    -- table iteration order (adding an unrelated entry used to be able to flip which of two
-    -- equally long keys won).
+    -- table iteration order.
     table.sort(keys, function(a, b)
         local la, lb = string.len(a), string.len(b)
         if la ~= lb then return la > lb end
         return a < b
     end)
+    outLowerMap = lowerMap
     outSortedKeysCache = keys
-    outSortedKeysCount = count
-    return keys
+end
+
+function WoWTranslate_CheckOutGlossaryExact(text)
+    if WoWTranslateOutGlossary[text] then
+        return WoWTranslateOutGlossary[text]
+    end
+    BuildOutGlossaryCache()
+    return outLowerMap[string.lower(text)]
 end
 
 function WoWTranslate_CheckOutGlossaryPartial(text)
-    local sortedKeys = GetOutSortedKeys()
+    BuildOutGlossaryCache()
+    local sortedKeys = outSortedKeysCache
+    local lowerText = string.lower(text)
 
     local function isAlphanumeric(byte)
         return byte and (
@@ -885,7 +889,7 @@ function WoWTranslate_CheckOutGlossaryPartial(text)
 
         local pos = 1
         while pos <= textLen do
-            local startPos, endPos = string.find(text, key, pos, true)
+            local startPos, endPos = string.find(lowerText, key, pos, true)
             if not startPos then break end
 
             local ok = true
@@ -911,7 +915,7 @@ function WoWTranslate_CheckOutGlossaryPartial(text)
                 table.insert(matches, {
                     startPos    = startPos,
                     endPos      = endPos,
-                    replacement = WoWTranslateOutGlossary[key]
+                    replacement = outLowerMap[key]
                 })
             end
 

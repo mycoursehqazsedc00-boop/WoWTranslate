@@ -114,33 +114,33 @@ function WoWTranslate_API.Translate(text, callback, fromLang)
         if callback then
             callback(nil, "DLL not available")
         end
-        return false
+        return false, "dll_unavailable"
     end
 
     if not text or text == "" then
         if callback then
             callback(nil, "Empty text")
         end
-        return false
+        return false, "empty"
     end
 
     -- Silently skip when the DLL queue is already full.
     -- Excess requests would be dropped by the DLL internally, leaving Lua-side
     -- pendingRequests entries that only time out after 30s, degrading the DLL state.
     if activePendingCount >= MAX_PENDING then
-        return false
+        return false, "queue_full"
     end
 
     -- Silently skip during API error backoff window.
     if GetTime() < rateLimitedUntil then
-        return false
+        return false, "rate_limited"
     end
 
     -- Deduplicate: the same chat message fires in every chat frame at once, producing
     -- 4-5 identical requests before any result is cached.  Only the first needs to go
     -- to the DLL; the rest will get a cache hit when the first callback completes.
     if pendingTexts[text] then
-        return false
+        return false, "dedup"
     end
 
     -- Generate unique request ID
@@ -151,7 +151,8 @@ function WoWTranslate_API.Translate(text, callback, fromLang)
     pendingRequests[requestId] = {
         callback = callback,
         text = text,
-        timestamp = GetTime()
+        timestamp = GetTime(),
+        isOutgoing = false
     }
     pendingTexts[text] = requestId
 
@@ -164,11 +165,11 @@ function WoWTranslate_API.Translate(text, callback, fromLang)
 
     if not success then
         pendingRequests[requestId] = nil
-		pendingTexts[text] = nil 
+        pendingTexts[text] = nil
         if callback then
             callback(nil, "DLL call failed: " .. tostring(err))
         end
-        return false
+        return false, "dll_error"
     end
 
     OnRequestQueued()
@@ -201,69 +202,72 @@ local function ParseResult(result)
     return requestId, string.sub(result, firstPipe + 1), ""
 end
 
--- Poll DLL for completed translations
+-- Poll DLL for completed translations (drain up to MAX_PENDING results per tick)
 local function PollTranslations()
     if not dllAvailable then return end
 
-    local success, result = pcall(function()
-        return UnitXP("WoWTranslate", "poll")
-    end)
+    for _ = 1, MAX_PENDING do
+        local success, result = pcall(function()
+            return UnitXP("WoWTranslate", "poll")
+        end)
 
-    if not success then
-        -- UnitXP call itself threw — DLL is gone or broken
-        dllAvailable = false
-        return
-    end
+        if not success then
+            -- UnitXP call itself threw — DLL is gone or broken
+            dllAvailable = false
+            return
+        end
 
-    if success and result and result ~= "" then
+        if not result or result == "" then
+            break
+        end
+
         -- Parse result format: "requestId|translation|error"
         local requestId, translation, err = ParseResult(result)
-        if requestId then
-
-            if requestId and pendingRequests[requestId] then
-                local req = pendingRequests[requestId]
-                pendingRequests[requestId] = nil
+        if requestId and pendingRequests[requestId] then
+            local req = pendingRequests[requestId]
+            pendingRequests[requestId] = nil
+            if not req.isOutgoing then
                 pendingTexts[req.text] = nil
-                OnRequestCompleted()
+            end
+            OnRequestCompleted()
 
-                if req.callback then
-                    -- pcall prevents a callback error from disabling the pollFrame OnUpdate.
-                    -- Capture errors so /wt status can surface them for diagnosis.
-                    local _cbOk, _cbErr
-                    if err and err ~= "" then
-                        if err == "rate limited" then
-                            -- DLL confirmed HTTP 429: back off immediately on first hit.
+            if req.callback then
+                -- pcall prevents a callback error from disabling the pollFrame OnUpdate.
+                -- Capture errors so /wt status can surface them for diagnosis.
+                local _cbOk, _cbErr
+                if err and err ~= "" then
+                    if err == "rate limited" then
+                        -- DLL confirmed HTTP 429: back off immediately on first hit.
+                        rateLimitedUntil     = GetTime() + rateLimitBackoff
+                        rateLimitBackoff     = math.min(rateLimitBackoff * 2, 300)
+                        consecutiveApiErrors = 0
+                    elseif err == "API error" then
+                        -- Generic parse failure: could be an undetected rate-limit
+                        -- variant or a content-policy block.  Back off after
+                        -- BACKOFF_TRIGGER consecutive hits as a safety net.
+                        consecutiveApiErrors = consecutiveApiErrors + 1
+                        if consecutiveApiErrors >= BACKOFF_TRIGGER then
                             rateLimitedUntil     = GetTime() + rateLimitBackoff
                             rateLimitBackoff     = math.min(rateLimitBackoff * 2, 300)
                             consecutiveApiErrors = 0
-                        elseif err == "API error" then
-                            -- Generic parse failure: could be an undetected rate-limit
-                            -- variant or a content-policy block.  Back off after
-                            -- BACKOFF_TRIGGER consecutive hits as a safety net.
-                            consecutiveApiErrors = consecutiveApiErrors + 1
-                            if consecutiveApiErrors >= BACKOFF_TRIGGER then
-                                rateLimitedUntil     = GetTime() + rateLimitBackoff
-                                rateLimitBackoff     = math.min(rateLimitBackoff * 2, 300)
-                                consecutiveApiErrors = 0
-                            end
-                        else
-                            -- "network error", "timeout", etc. — transient, don't count.
-                            consecutiveApiErrors = 0
                         end
-                        _cbOk, _cbErr = pcall(req.callback, nil, err)
                     else
-                        -- Successful response: reset everything.
+                        -- "network error", "timeout", etc. — transient, don't count.
                         consecutiveApiErrors = 0
-                        rateLimitBackoff     = 15
-                        -- Google Translate sometimes inserts a space after an apostrophe
-                        -- when translating from languages that have no contractions (e.g. Chinese),
-                        -- producing "doesn' t" or "won'  t".  Strip the extra space(s).
-                        translation = string.gsub(translation, "'%s+(%a)", "'%1")
-                        _cbOk, _cbErr = pcall(req.callback, translation, nil)
                     end
-                    if not _cbOk then
-                        lastCallbackError = tostring(_cbErr)
-                    end
+                    _cbOk, _cbErr = pcall(req.callback, nil, err)
+                else
+                    -- Successful response: reset everything.
+                    consecutiveApiErrors = 0
+                    rateLimitBackoff     = 15
+                    -- Google Translate sometimes inserts a space after an apostrophe
+                    -- when translating from languages that have no contractions (e.g. Chinese),
+                    -- producing "doesn' t" or "won'  t".  Strip the extra space(s).
+                    translation = string.gsub(translation, "'%s+(%a)", "'%1")
+                    _cbOk, _cbErr = pcall(req.callback, translation, nil)
+                end
+                if not _cbOk then
+                    lastCallbackError = tostring(_cbErr)
                 end
             end
         end
@@ -274,7 +278,9 @@ local function PollTranslations()
     for id, req in pairs(pendingRequests) do
         if now - req.timestamp > REQUEST_TIMEOUT then
             pendingRequests[id] = nil
-            pendingTexts[req.text] = nil
+            if not req.isOutgoing then
+                pendingTexts[req.text] = nil
+            end
             OnRequestCompleted()
             if req.callback then
                 pcall(req.callback, nil, "Request timed out")  -- pcall: don't break polling on error
@@ -345,6 +351,7 @@ function WoWTranslate_API.TranslateOutgoing(text, callback)
     end
 
     if GetTime() < rateLimitedUntil then
+        if callback then callback(nil, "Rate limited, try again shortly") end
         return false
     end
 
@@ -356,7 +363,8 @@ function WoWTranslate_API.TranslateOutgoing(text, callback)
     pendingRequests[requestId] = {
         callback = callback,
         text = text,
-        timestamp = GetTime()
+        timestamp = GetTime(),
+        isOutgoing = true
     }
 
     -- Send request to DLL with configurable language direction
@@ -368,7 +376,6 @@ function WoWTranslate_API.TranslateOutgoing(text, callback)
 
     if not success then
         pendingRequests[requestId] = nil
-		pendingTexts[text] = nil 
         if callback then
             callback(nil, "DLL call failed: " .. tostring(err))
         end

@@ -1764,15 +1764,11 @@ function WoWTranslate_CheckGlossaryExact(text)
     return nil, nil
 end
 
--- Keys sorted longest first. Sorting ~1300 keys for every message was the main cost of a
--- partial lookup, so the sorted list is built once and rebuilt only if the number of keys changes.
+-- Keys sorted longest first. Built once and cached (glossary is static).
 local sortedKeysCache = nil
-local sortedKeysCount = 0
 
 local function GetSortedKeys()
-    local count = 0
-    for _ in pairs(WoWTranslateGlossary) do count = count + 1 end
-    if sortedKeysCache and count == sortedKeysCount then
+    if sortedKeysCache then
         return sortedKeysCache
     end
     local keys = {}
@@ -1788,7 +1784,6 @@ local function GetSortedKeys()
         return a < b
     end)
     sortedKeysCache = keys
-    sortedKeysCount = count
     return keys
 end
 
