@@ -61,6 +61,18 @@ function WoWTranslate_GetItemName(itemId)
     return nil, false
 end
 
+function WoWTranslate_ItemNamesClear()
+    local db = WoWTranslateItemNames
+    if type(db) == "table" then
+        local locale = db.__locale or GetLocale()
+        for k in pairs(db) do db[k] = nil end
+        db.__locale = locale
+        db.__n = 0
+    else
+        WoWTranslateItemNames = { __locale = GetLocale(), __n = 0 }
+    end
+end
+
 -- ---------------------------------------------------------------------------
 -- Plain-text Chinese item names -> English (names typed in chat without a link)
 -- ---------------------------------------------------------------------------

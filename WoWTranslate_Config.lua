@@ -427,9 +427,9 @@ local function ApplyTranslationColor(hex)
     WoWTranslate_TempConfig.translationColor = hex
     if WoWTranslateDB then WoWTranslateDB.translationColor = hex end
     if hex and string.len(hex) == 6 then
-        local r = tonumber(string.sub(hex, 1, 2), 16) / 255
-        local g = tonumber(string.sub(hex, 3, 4), 16) / 255
-        local b = tonumber(string.sub(hex, 5, 6), 16) / 255
+        local r = (tonumber(string.sub(hex, 1, 2), 16) or 255) / 255
+        local g = (tonumber(string.sub(hex, 3, 4), 16) or 255) / 255
+        local b = (tonumber(string.sub(hex, 5, 6), 16) or 255) / 255
         colorSwatch:SetBackdropColor(r, g, b)
     else
         colorSwatch:SetBackdropColor(0.5, 0.5, 0.5)
@@ -440,9 +440,9 @@ colorSwatch:SetScript("OnClick", function()
     local hex = (WoWTranslateDB and WoWTranslateDB.translationColor) or ""
     local r, g, b = 1, 1, 1
     if hex and string.len(hex) == 6 then
-        r = tonumber(string.sub(hex, 1, 2), 16) / 255
-        g = tonumber(string.sub(hex, 3, 4), 16) / 255
-        b = tonumber(string.sub(hex, 5, 6), 16) / 255
+        r = (tonumber(string.sub(hex, 1, 2), 16) or 255) / 255
+        g = (tonumber(string.sub(hex, 3, 4), 16) or 255) / 255
+        b = (tonumber(string.sub(hex, 5, 6), 16) or 255) / 255
     end
     ColorPickerFrame.hasOpacity = false
     ColorPickerFrame.func = function()
@@ -452,7 +452,8 @@ colorSwatch:SetScript("OnClick", function()
         ApplyTranslationColor(nhex)
     end
     ColorPickerFrame.cancelFunc = function(pv)
-        local pr, pg, pb = pv[1], pv[2], pv[3]
+        if not pv then return end
+        local pr, pg, pb = pv[1] or 1, pv[2] or 1, pv[3] or 1
         local phex = string.format("%02X%02X%02X",
             math.floor(pr * 255), math.floor(pg * 255), math.floor(pb * 255))
         ApplyTranslationColor(phex)
@@ -531,9 +532,9 @@ local function RefreshUI()
     if e.colorSwatch then
         local hex = cfg.translationColor or ""
         if hex and string.len(hex) == 6 then
-            local r = tonumber(string.sub(hex, 1, 2), 16) / 255
-            local g = tonumber(string.sub(hex, 3, 4), 16) / 255
-            local b = tonumber(string.sub(hex, 5, 6), 16) / 255
+            local r = (tonumber(string.sub(hex, 1, 2), 16) or 255) / 255
+            local g = (tonumber(string.sub(hex, 3, 4), 16) or 255) / 255
+            local b = (tonumber(string.sub(hex, 5, 6), 16) or 255) / 255
             e.colorSwatch:SetBackdropColor(r, g, b)
         else
             e.colorSwatch:SetBackdropColor(0.5, 0.5, 0.5)
