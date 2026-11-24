@@ -64,14 +64,11 @@ button:SetScript("OnDragStart", function()
     isDragging = true
     this:SetScript("OnUpdate", function()
         local mx, my = Minimap:GetCenter()
-        local scale = Minimap:GetScale()
+        local scale = Minimap:GetEffectiveScale()
         local cx, cy = GetCursorPosition()
-        local uiScale = UIParent:GetScale()
-        cx = cx / (scale * uiScale)
-        cy = cy / (scale * uiScale)
-        mx = mx / uiScale
-        my = my / uiScale
-        local angle = math.deg(math.atan2(cy - my, cx - mx))
+        cx = cx / scale
+        cy = cy / scale
+        local angle = math.deg(math.atan2(cy - my, mx - cx))
         if not WoWTranslateDB then WoWTranslateDB = {} end
         WoWTranslateDB.minimapPos = angle
         UpdatePosition()

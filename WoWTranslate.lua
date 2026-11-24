@@ -28,6 +28,9 @@ local messageCounter = 0
 -- OnEvent for one message; dedup lets only the first reach the DLL, but all frames
 -- that displayed the original must also show the translation.
 local frameTranslationTargets = {}
+local pendingReplaceByRaw = {}
+local pendingRawByTranslated = {}
+local wimLastUser, wimLastMsg, wimLastTime = nil, nil, 0
 
 -- Outgoing translation state
 local outgoingQueue = {}
@@ -37,9 +40,9 @@ local originalSendChatMessage = SendChatMessage
 -- Waiters for in-flight player/guild name translations (rawName -> { callbacks = {} })
 local pendingNameTranslations = {}
 
--- Forward reference: assigned after HookNameplates is defined so
--- WoWTranslate_SetTranslateNameplates can start the scanner mid-session.
+-- Forward references
 local wtNameplateScanStart = nil
+local InitializeSettings = nil
 
 -- Pre-translated prefixes for outgoing messages (zero API cost)
 local TRANSLATED_PREFIXES = {
@@ -371,10 +374,10 @@ end
 local function DetectSourceLanguage(text)
     if not text then return nil end
     local enabled = (WoWTranslateDB and WoWTranslateDB.enabledSourceLangs)
-                    or { zh=true, ja=true, ko=true, ru=true }
+                    or { zh=true, ja=true, ko=true, ru=true, en=true }
     -- If table exists but every lang is nil/false, fall back to all-enabled
-    if not enabled.zh and not enabled.ja and not enabled.ko and not enabled.ru then
-        enabled = { zh=true, ja=true, ko=true, ru=true }
+    if not enabled.zh and not enabled.ja and not enabled.ko and not enabled.ru and not enabled.en then
+        enabled = { zh=true, ja=true, ko=true, ru=true, en=true }
     end
 
     local hasKorean   = false
@@ -418,8 +421,8 @@ local function DetectSourceLanguage(text)
     if enabled.ja and hasHiragana then return "ja" end
     if enabled.ru and hasRussian  then return "ru" end
     -- English: >= 4 ASCII alpha chars, no CJK/Korean/Japanese/Russian.
-    -- Detection is unconditional (same-language skip prevents en→en no-ops).
-    if asciiAlpha >= 4 and not (hasCJK or hasKorean or hasHiragana or hasRussian) then
+    -- Respect enabled.en (default true when nil for legacy SavedVariables).
+    if enabled.en ~= false and asciiAlpha >= 4 and not (hasCJK or hasKorean or hasHiragana or hasRussian) then
         return "en"
     end
     return nil
@@ -442,6 +445,13 @@ itemCacheTooltip:SetOwner(WorldFrame, "ANCHOR_NONE")
 -- Force item data to be requested from server using SetHyperlink
 -- This is more reliable than just calling GetItemInfo()
 local function TriggerItemCache(itemId)
+    if C_Item and type(C_Item.RequestLoadItemDataByID) == "function" then
+        local ok = pcall(C_Item.RequestLoadItemDataByID, itemId)
+        if ok then
+            DebugLog("Triggered ClassicAPI item cache for item:", itemId)
+            return
+        end
+    end
     local itemString = "item:" .. itemId .. ":0:0:0"
     itemCacheTooltip:SetHyperlink(itemString)
     DebugLog("Triggered cache for item:", itemId)
@@ -1238,24 +1248,44 @@ local function ResolvePlayerDisplayName(rawName, callback)
     end, nameLang)
 
     if not ok then
-        -- Queue full; poll cache briefly so the waiter doesn't hang.
-        local retries = 0
-        local pollFrame = CreateFrame("Frame")
-        local elapsed = 0
-        pollFrame:SetScript("OnUpdate", function()
-            elapsed = elapsed + arg1
-            if elapsed < 0.1 then return end
-            elapsed = 0
-            retries = retries + 1
-            local c, hit = WoWTranslate_CacheGet(cacheKey)
-            if hit then
-                pollFrame:SetScript("OnUpdate", nil)
-                finish(c)
-            elseif retries >= 50 then
-                pollFrame:SetScript("OnUpdate", nil)
-                finish(rawName)
-            end
-        end)
+        -- Queue full; poll cache briefly via a single shared retry frame (no Frame leak).
+        if not WoWTranslate_NameRetryFrame then
+            WoWTranslate_NameRetryFrame = CreateFrame("Frame")
+            WoWTranslate_NameRetryQueue = {}
+            WoWTranslate_NameRetryElapsed = 0
+        end
+        table.insert(WoWTranslate_NameRetryQueue, {
+            cacheKey = cacheKey,
+            rawName = rawName,
+            finish = finish,
+            retries = 0,
+        })
+        if not WoWTranslate_NameRetryActive then
+            WoWTranslate_NameRetryActive = true
+            WoWTranslate_NameRetryElapsed = 0
+            WoWTranslate_NameRetryFrame:SetScript("OnUpdate", function()
+                WoWTranslate_NameRetryElapsed = WoWTranslate_NameRetryElapsed + arg1
+                if WoWTranslate_NameRetryElapsed < 0.1 then return end
+                WoWTranslate_NameRetryElapsed = 0
+                local q = WoWTranslate_NameRetryQueue
+                for i = table.getn(q), 1, -1 do
+                    local item = q[i]
+                    item.retries = item.retries + 1
+                    local c, hit = WoWTranslate_CacheGet(item.cacheKey)
+                    if hit then
+                        table.remove(q, i)
+                        item.finish(c)
+                    elseif item.retries >= 50 then
+                        table.remove(q, i)
+                        item.finish(item.rawName)
+                    end
+                end
+                if table.getn(q) == 0 then
+                    WoWTranslate_NameRetryActive = false
+                    WoWTranslate_NameRetryFrame:SetScript("OnUpdate", nil)
+                end
+            end)
+        end
     end
 end
 
@@ -1619,7 +1649,10 @@ local function ResolveTooltipPlayerName(tooltip)
         if tooltip.wtUnit and UnitExists(tooltip.wtUnit) then altName = UnitPVPName(tooltip.wtUnit) end
         return tooltip.wtPlayerName, altName
     end
-    if tooltip.wtUnit and UnitExists(tooltip.wtUnit) and UnitIsPlayer(tooltip.wtUnit) then
+    if tooltip.wtUnit and UnitExists(tooltip.wtUnit) then
+        if not UnitIsPlayer(tooltip.wtUnit) then
+            return nil
+        end
         local name = UnitName(tooltip.wtUnit)
         local pvp  = UnitPVPName(tooltip.wtUnit)
         if name and name ~= "" then tooltip.wtPlayerName = name; return name, pvp end
@@ -1629,10 +1662,6 @@ local function ResolveTooltipPlayerName(tooltip)
         local tipText = fs:GetText()
         local unit, name, pvp = FindPlayerUnitFromTooltipText(tipText)
         if name then tooltip.wtUnit = unit; tooltip.wtPlayerName = name; return name, pvp end
-        local plain = StripColorCodes(tipText)
-        if plain and plain ~= "" and ShouldTranslatePlayerName(plain) then
-            tooltip.wtPlayerName = plain; return plain, nil
-        end
     end
     return nil
 end
@@ -2134,7 +2163,7 @@ local function EnsureNameplateGuildFont(plate, nameFs)
     local parent = overlay or plate
     local anchor = (overlay and overlay.name and overlay.name.GetText and overlay.name) or nameFs
     if not anchor then return nil end
-    local fs = parent:CreateFontString("WoWTranslateNameplateGuild", "OVERLAY")
+    local fs = parent:CreateFontString(nil, "OVERLAY")
     if anchor.GetFont and fs.SetFont then
         local font, size, flags = anchor:GetFont()
         local small = (size and size > 8) and (size - 2) or 10
@@ -2336,6 +2365,8 @@ local function LFT_TranslateField(entryId, rawText, isTitle)
     if not rawText or rawText == "" then return end
     local detectedLang = DetectSourceLanguage(rawText)
     if not detectedLang then return end
+    local targetLang = (WoWTranslateDB and WoWTranslateDB.incomingToLang) or "en"
+    if detectedLang == targetLang then return end
 
     -- Cache hit: instant, no API call needed
     local cached, found = WoWTranslate_CacheGet(rawText)
@@ -2344,21 +2375,23 @@ local function LFT_TranslateField(entryId, rawText, isTitle)
         return
     end
 
-    -- Exact glossary hit: full-text WoW slang match
-    if WoWTranslate_CheckGlossaryExact then
-        local glossaryResult = WoWTranslate_CheckGlossaryExact(rawText)
-        if glossaryResult then
-            WoWTranslate_CacheSave(rawText, glossaryResult)
-            LFT_ApplyTranslation(entryId, isTitle, glossaryResult)
-            return
-        end
-    end
-
-    -- Partial glossary preprocessing then API translation
     local textToTranslate = rawText
-    if WoWTranslate_CheckGlossaryPartial then
-        local partial = WoWTranslate_CheckGlossaryPartial(rawText)
-        if partial then textToTranslate = partial end
+    if targetLang == "en" then
+        -- Exact glossary hit: full-text WoW slang match
+        if WoWTranslate_CheckGlossaryExact then
+            local glossaryResult = WoWTranslate_CheckGlossaryExact(rawText)
+            if glossaryResult then
+                WoWTranslate_CacheSave(rawText, glossaryResult)
+                LFT_ApplyTranslation(entryId, isTitle, glossaryResult)
+                return
+            end
+        end
+
+        -- Partial glossary preprocessing then API translation
+        if WoWTranslate_CheckGlossaryPartial then
+            local partial = WoWTranslate_CheckGlossaryPartial(rawText)
+            if partial then textToTranslate = partial end
+        end
     end
 
     if not WoWTranslate_API or not WoWTranslate_API.IsAvailable() then return end
@@ -2367,7 +2400,7 @@ local function LFT_TranslateField(entryId, rawText, isTitle)
             WoWTranslate_CacheSave(rawText, translation)
             LFT_ApplyTranslation(entryId, isTitle, translation)
         end
-    end, detectedLang)
+    end, detectedLang, "LOW")
 end
 
 local function LFT_ScanVisibleEntries()
@@ -2410,16 +2443,9 @@ end
 -- ============================================================================
 local function HookGameTooltip()
     if not GameTooltip then return end
-    if GameTooltip.WoWTranslateOrigSetUnit then
-        GameTooltip.SetUnit = GameTooltip.WoWTranslateOrigSetUnit
-    end
-    if GameTooltip.WoWTranslateOrigSetHyperlink then
-        GameTooltip.SetHyperlink = GameTooltip.WoWTranslateOrigSetHyperlink
-    end
-    if not GameTooltip.WoWTranslateOrigSetUnit then
-        GameTooltip.WoWTranslateOrigSetUnit = GameTooltip.SetUnit
-    end
-    if GameTooltip.SetHyperlink and not GameTooltip.WoWTranslateOrigSetHyperlink then
+    if GameTooltip.WoWTranslateTooltipHooked then return end
+    GameTooltip.WoWTranslateOrigSetUnit = GameTooltip.SetUnit
+    if GameTooltip.SetHyperlink then
         GameTooltip.WoWTranslateOrigSetHyperlink = GameTooltip.SetHyperlink
     end
     GameTooltip.WoWTranslateTooltipHooked = true
@@ -2487,10 +2513,8 @@ end
 
 local function HookItemRefTooltip()
     if not ItemRefTooltip then return end
-    if ItemRefTooltip.WoWTranslateOrigSetHyperlink then
-        ItemRefTooltip.SetHyperlink = ItemRefTooltip.WoWTranslateOrigSetHyperlink
-    end
-    if ItemRefTooltip.SetHyperlink and not ItemRefTooltip.WoWTranslateOrigSetHyperlink then
+    if ItemRefTooltip.WoWTranslateTooltipHooked then return end
+    if ItemRefTooltip.SetHyperlink then
         ItemRefTooltip.WoWTranslateOrigSetHyperlink = ItemRefTooltip.SetHyperlink
     end
     ItemRefTooltip.WoWTranslateTooltipHooked = true
@@ -2842,6 +2866,13 @@ local function HookChatFrames(force)
                                    WIM_Data.supressWisps ~= false and
                                    type(WIM_PostMessage) == "function" and
                                    capturedArg2 and capturedArg2 ~= "" then
+                                    local nowWim = GetTime()
+                                    if capturedArg2 == wimLastUser and capturedArg1 == wimLastMsg and (nowWim - wimLastTime) < 0.25 then
+                                        return
+                                    end
+                                    wimLastUser = capturedArg2
+                                    wimLastMsg  = capturedArg1
+                                    wimLastTime = nowWim
                                     wimWhisperUser = capturedArg2
                                 else
                                     FlushOriginal(); return
@@ -2948,13 +2979,22 @@ local function HookChatFrames(force)
                             local callbackHandled = false
                             local apiQueued, apiReason = WoWTranslate_API.Translate(textToTranslate, function(translation, err)
                                 callbackHandled = true
+                                if pendingRawByTranslated[textToTranslate] == capturedArg1 then
+                                    pendingRawByTranslated[textToTranslate] = nil
+                                end
                                 if translation and translation ~= "" then
                                     DebugLog("Translation:", string.sub(translation, 1, 50))
                                     translationErrWarnShown = false
                                     WoWTranslate_CacheSave(capturedArg1, translation)
                                     local reconstructed = ReconstructMessage(segments, translation)
-                                    -- replaceMode: original was suppressed; clear safety net entry.
-                                    if replacePendingKey then
+                                    -- replaceMode: original was suppressed; clear all frames' safety net entries.
+                                    local rpKeys = pendingReplaceByRaw[capturedArg1]
+                                    if rpKeys then
+                                        for i = 1, table.getn(rpKeys) do
+                                            pendingMessages[rpKeys[i]] = nil
+                                        end
+                                        pendingReplaceByRaw[capturedArg1] = nil
+                                    elseif replacePendingKey then
                                         pendingMessages[replacePendingKey] = nil
                                     end
                                     -- Post to every frame that displayed the original message.
@@ -2976,8 +3016,23 @@ local function HookChatFrames(force)
                                 else
                                     DebugLog("Translation error:", tostring(err))
                                     frameTranslationTargets[capturedArg1] = nil
-                                    -- replaceMode: translation failed — show original immediately.
-                                    if replacePendingKey then
+                                    -- replaceMode: translation failed — flush original in all suppressed frames.
+                                    local flushedPrimary = false
+                                    local rpKeys = pendingReplaceByRaw[capturedArg1]
+                                    if rpKeys then
+                                        pendingReplaceByRaw[capturedArg1] = nil
+                                        for i = 1, table.getn(rpKeys) do
+                                            local k = rpKeys[i]
+                                            local rp = pendingMessages[k]
+                                            pendingMessages[k] = nil
+                                            if rp then
+                                                if k == replacePendingKey then flushedPrimary = true end
+                                                rp.originalAddMessage(rp.frame, rp.originalText,
+                                                    rp.r, rp.g, rp.b, rp.id, rp.holdTime)
+                                            end
+                                        end
+                                    end
+                                    if not flushedPrimary and replacePendingKey then
                                         local rp = pendingMessages[replacePendingKey] or replacePendingData
                                         pendingMessages[replacePendingKey] = nil
                                         if rp then
@@ -2993,12 +3048,28 @@ local function HookChatFrames(force)
                             end, detectedLang)
 
                             if apiQueued then
+                                pendingRawByTranslated[textToTranslate] = capturedArg1
                                 if not callbackHandled and replacePendingData then
                                     replacePendingData.timestamp = GetTime()
                                     pendingMessages[replacePendingKey] = replacePendingData
+                                    if not pendingReplaceByRaw[capturedArg1] then
+                                        pendingReplaceByRaw[capturedArg1] = {}
+                                    end
+                                    table.insert(pendingReplaceByRaw[capturedArg1], replacePendingKey)
                                 end
-                            elseif apiReason ~= "dedup" then
-                                -- Request was dropped (queue full, rate limited, etc.)
+                            elseif apiReason == "dedup" and pendingRawByTranslated[textToTranslate] == capturedArg1 then
+                                -- Same raw message in a secondary chat frame: track its suppressed original
+                                -- so it is cleared on success and flushed on error/timeout.
+                                if replacePendingData then
+                                    replacePendingData.timestamp = GetTime()
+                                    pendingMessages[replacePendingKey] = replacePendingData
+                                    if not pendingReplaceByRaw[capturedArg1] then
+                                        pendingReplaceByRaw[capturedArg1] = {}
+                                    end
+                                    table.insert(pendingReplaceByRaw[capturedArg1], replacePendingKey)
+                                end
+                            else
+                                -- Request was dropped (queue full, rate limited, or placeholder dedup collision)
                                 frameTranslationTargets[capturedArg1] = nil
                                 if not callbackHandled and replacePendingData then
                                     replacePendingData.originalAddMessage(replacePendingData.frame,
@@ -3079,8 +3150,9 @@ local function HookedSendChatMessage(msg, chatType, language, channel)
         -- GetChannelName(number) does not reliably return the name in WoW 1.12;
         -- iterate GetChannelList() instead (returns id, name, id, name, ...).
         local list = {GetChannelList()}
+        local channelNum = tonumber(channel)
         for i = 1, table.getn(list), 2 do
-            if list[i] == channel then
+            if list[i] == channelNum then
                 if string.find(string.lower(list[i+1] or ""), "^english") then
                     effectiveOutChannel = "ENGLISH"
                 end
@@ -3354,6 +3426,7 @@ local outgoingHookInstalled = false
 local function InstallOutgoingHook()
     if SendChatMessage ~= HookedSendChatMessage then
         DebugLog("Installing outgoing SendChatMessage hook")
+        originalSendChatMessage = SendChatMessage
         SendChatMessage = HookedSendChatMessage
         outgoingHookInstalled = true
     end
@@ -3779,7 +3852,7 @@ end
 -- ============================================================================
 -- ADDON INITIALIZATION
 -- ============================================================================
-local function InitializeSettings()
+InitializeSettings = function()
     if not WoWTranslateDB then WoWTranslateDB = {} end
     if not WoWTranslateDebugLog then WoWTranslateDebugLog = {} end
     if type(WoWTranslateCache) ~= "table" then WoWTranslateCache = {} end

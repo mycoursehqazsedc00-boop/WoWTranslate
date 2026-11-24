@@ -451,12 +451,9 @@ colorSwatch:SetScript("OnClick", function()
             math.floor(nr * 255), math.floor(ng * 255), math.floor(nb * 255))
         ApplyTranslationColor(nhex)
     end
+    local origHex = hex
     ColorPickerFrame.cancelFunc = function(pv)
-        if not pv then return end
-        local pr, pg, pb = pv[1] or 1, pv[2] or 1, pv[3] or 1
-        local phex = string.format("%02X%02X%02X",
-            math.floor(pr * 255), math.floor(pg * 255), math.floor(pb * 255))
-        ApplyTranslationColor(phex)
+        ApplyTranslationColor(origHex)
     end
     ColorPickerFrame.previousValues = { r, g, b }
     ColorPickerFrame:SetColorRGB(r, g, b)

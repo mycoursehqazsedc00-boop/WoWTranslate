@@ -95,16 +95,51 @@ function WoWTranslate_CacheGet(text)
     return nil, false
 end
 
+-- ---------------------------------------------------------------------------
+-- Hub-and-Spoke Event Bus (ON_TRANSLATED)
+-- Allows companion addons (DifficultBulletinBoard, Meeting, etc.) to receive
+-- translations pushed by WoWTranslate without issuing duplicate DLL requests.
+-- ---------------------------------------------------------------------------
+local translationCallbacks = {}
+local firingTranslationCallbacks = false
+
+function WoWTranslate_RegisterCallback(eventName, fn)
+    if eventName ~= "ON_TRANSLATED" or type(fn) ~= "function" then return false end
+    for i = 1, table.getn(translationCallbacks) do
+        if translationCallbacks[i] == fn then return true end
+    end
+    table.insert(translationCallbacks, fn)
+    return true
+end
+
+local function FireOnTranslated(text, translation)
+    if firingTranslationCallbacks then return end
+    local count = table.getn(translationCallbacks)
+    if count == 0 then return end
+    -- Skip internal player/guild name cache keys ("\1wt_name:...", "\1wt_guild:...")
+    if string.byte(text, 1) == 1 then return end
+    firingTranslationCallbacks = true
+    for i = 1, count do
+        pcall(translationCallbacks[i], text, translation)
+    end
+    firingTranslationCallbacks = false
+end
+
 -- Save a translation to cache (keeps the usage counters of an existing entry).
 -- quiet = true: do not list it in the recent-lines buffer (used for reverse pairs).
 function WoWTranslate_CacheSave(text, translation, quiet)
     if text and translation and text ~= "" and translation ~= "" then
         if not quiet then Remember(text, translation) end
         local e = WoWTranslateCache[text]
+        local changed = true
         if type(e) == "table" then
+            changed = (e[1] ~= translation)
             e[1] = translation
         else
             WoWTranslateCache[text] = { translation, 1, Today() }
+        end
+        if not quiet and changed then
+            FireOnTranslated(text, translation)
         end
         return true
     end
@@ -209,12 +244,13 @@ function WoWTranslate_CachePrune()
             if need <= 0 then break end
             cache[list[i][1]] = nil
             removed = removed + 1
+            total = total - 1
             need = need - 1
         end
     end
 
     lastPruned = removed
-    Trace("Cache prune: removed", removed, "kept", total - removed)
+    Trace("Cache prune: removed", removed, "kept", total)
     return removed
 end
 

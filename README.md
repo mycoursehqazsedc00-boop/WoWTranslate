@@ -21,8 +21,9 @@ Fully compatible with [WoW-CNLocale](https://github.com/paokkerkir/WoW-CNLocale)
 | Mod | Role | Notes |
 |---|---|---|
 | `WoWTranslate.dll` (pre-built, attached to each [GitHub Release](../../releases/latest)) | **Required** | Performs the HTTP translation request off the game thread and exposes it to Lua through the `UnitXP("WoWTranslate", ...)` entry point. Must be loaded by a DLL launcher such as VanillaFixes. |
+| **[ClassicAPI](https://github.com/brues-code/ClassicAPI)** | **Optional** | Uses `C_PlayerCache.GetPlayerInfoByName` for cross-faction player class coloring and `C_Item.RequestLoadItemDataByID` for faster item-link cache warmup (falls back to hidden tooltip scanning when absent). |
 
-No other client mod (SuperWoW, Nampower, ClassicAPI, VanillaHelpers) is required or called by the addon code.
+No other client mod (SuperWoW, Nampower, UnitXP SP3, VanillaHelpers, WeirdUtils) is required or called by the addon code.
 
 **Compatibility note:** `WoWTranslate.dll` hooks the same `UnitXP` Lua entry point that UnitXP SP3 extends. If translations stop while both are loaded, change their order in `dlls.txt`.
 
@@ -58,10 +59,11 @@ No other client mod (SuperWoW, Nampower, ClassicAPI, VanillaHelpers) is required
 | 📘 **Turtle WoW shorthand in the glossary** | 58 entries from the community translation table: build tags (ZST, QST, 科技LR, 开怪LR, 跳怪LR, 电萨, 鸟D, 猫D...), summon and crafting callouts, Turtle WoW dungeons and raids (FMH, WHC, DMR, HFQ, SWV, LKH, TMH, Kara40, HLMM...), 3Q and hhh. |
 | 🧩 **Cleaner glossary replacements** | Replacements that touch each other across Chinese text are separated by a space (`来个MS` gave `NeedPriest`, now `Need Priest`). |
 | ⚡ **Faster glossary lookup** | The sorted key list is built once instead of for every partial lookup (about 5 to 8 times faster in the test harness). |
-| 📦 **Item names without the server** | A bundled table of 6,111 item names (item ID to English name) is the last fallback for item links, after the client and the names stored from earlier sessions. On an English client a link resolves at once, with no server query and no wait, even right after the `WDB` folder was deleted. |
-| 🧾 **Item names typed without a link** | Chinese item names of four or more characters are replaced by their English names (5,233 names). Names of two or three characters, and names that map to more than one English name, are left out on purpose. A glossary entry wins when a name is also a glossary key. |
+| 📦 **Item names without the server** | A bundled table of 6,109 item names (`WoWTranslate_ItemEN`, synced from AtlasLoot Turtle WoW Edition) is the last fallback for item links, after the client and the names stored from earlier sessions. On an English client a link resolves at once, with no server query and no wait, even right after the `WDB` folder was deleted. |
+| 🧾 **Item names typed without a link** | Chinese item names of four or more characters are replaced by their English names (5,834 `WoWTranslate_ItemZH` pairs synced from AtlasLoot & AtlasLootZHCN). Names of two or three characters are left out on purpose. A glossary entry wins when a name is also a glossary key. |
 | ✅ **Local posting of fully glossary-translated lines** | A line whose Chinese is completely covered by the glossary (and item names) is posted directly. Before, it was still sent to the translation service, because English text always counted as "something to translate". |
-| 🔌 **Public API for other addons** | `WoWTranslate_PrepareOutgoing` translates a message the way the outgoing hook does but does not send it, and `WoWTranslate_SendRaw` sends without translation. Used by AutoMessage 2.0 to translate a repeating message once. |
+| 🔌 **Hub-and-Spoke Public API & Priority Queue** | `WoWTranslate_RegisterCallback("ON_TRANSLATED", fn)` pushes completed translations to companion addons (`DifficultBulletinBoard`, `Meeting`) with zero duplicate DLL calls. `WoWTranslate_API.Translate` supports `"HIGH"` / `"NORMAL"` / `"LOW"` priority (reserving 1 slot for live player chat). `WoWTranslate_PrepareOutgoing` and `WoWTranslate_SendRaw` support outgoing-hook-safe sending. |
+| 🛡️ **Stability & Memory Hardening** | Reuses a single persistent `pollFrame` and shared player-name retry frame (eliminating C++ Frame leaks), drains callbacks safely outside `pairs()` iteration, skips same-language LFT entries (`en -> en`), uses idempotent tooltip/outgoing hooks so other addons' hooks are preserved, prevents translating NPC/item tooltips as player names, flushes `replaceMode` originals across secondary chat frames on failure/dedup collision, deduplicates WIM whispers, and fixes minimap drag scaling/X-axis. |
 | 🌐 **Shared dictionary layer** | An optional read-only data file, `WoWTranslate_SharedDict.lua`, checked after the cache. It ships empty and is maintained by hand. |
 
 ---
@@ -166,6 +168,8 @@ Saved variables added by this fork: `WoWTranslateDict` and `WoWTranslateItemName
 
 | Function | Description |
 |----------|-------------|
+| `WoWTranslate_RegisterCallback("ON_TRANSLATED", fn)` | Subscribes `fn(rawText, translatedText)` to completed translations saved to the shared cache, allowing companion addons (`DifficultBulletinBoard`, `Meeting`) to update immediately without sending duplicate DLL requests. |
+| `WoWTranslate_API.Translate(text, callback, fromLang, priority)` | Queues an async translation. Optional `priority` (`"HIGH"`, `"NORMAL"`, `"LOW"`) reserves 1 DLL queue slot for live chat when `"LOW"` is passed by background consumers. |
 | `WoWTranslate_PrepareOutgoing(msg, callback)` | Translates `msg` like the outgoing hook (links kept, outgoing glossary, prefix, 255 byte limit) without sending it. `callback(finalMsg, err)` is called once; `finalMsg` is `nil` on failure (`err` says why). Text that needs no translation (empty, `#` or `.` commands, addon traffic, text already in the target language) is returned unchanged and immediately. The reverse pair is stored, so the echo of the sent line shows the original text. Returns `false` only when `callback` is not a function. |
 | `WoWTranslate_SendRaw(msg, chatType, language, channel)` | Sends a chat message without outgoing translation. |
 
