@@ -11,6 +11,7 @@ local pendingTexts = {}   -- text -> requestId; deduplicates identical in-flight
 local dllAvailable = false
 local requestCounter = 0
 local pollFrame = nil
+local pollActive = false
 local activePendingCount = 0
 local healthCheckElapsed = 0
 local HEALTH_CHECK_INTERVAL = 60  -- Re-ping DLL every 60s; wakes HTTP client after alt-tab
@@ -89,7 +90,7 @@ end
 -- Called when a new request is queued
 local function OnRequestQueued()
     activePendingCount = activePendingCount + 1
-    if not pollFrame then
+    if not pollActive then
         WoWTranslate_API.StartPolling()
     end
 end
@@ -304,7 +305,6 @@ local function PollTranslations()
 end
 
 -- Start the polling frame (reuse single persistent frame to avoid C++ Frame leaks)
-local pollActive = false
 local pollElapsed = 0
 local function PollOnUpdate()
     pollElapsed = pollElapsed + arg1
